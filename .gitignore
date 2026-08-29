@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local runtime state
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/index_cache/
+logs/
+traces/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/

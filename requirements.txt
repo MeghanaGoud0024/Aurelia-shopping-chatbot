@@ -1,0 +1,17 @@
+# --- Core web framework -------------------------------------------------
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+
+# --- Data / persistence -------------------------------------------------
+SQLAlchemy>=2.0,<3.0
+
+# --- Validation & configuration ----------------------------------------
+pydantic>=2.9,<3.0
+pydantic-settings>=2.6,<3.0
+python-dotenv>=1.0,<2.0
+
+# --- LLM transport ------------------------------------------------------
+# We talk to Groq's OpenAI-compatible endpoint directly over httpx rather
+# than pulling a vendor SDK. This keeps the dependency surface small and
+# lets us control retries, timeouts and streaming precisely.
+httpx>=0.27,<1.0
