@@ -511,7 +511,11 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="remove_from_cart",
-        description="Remove a line from the cart entirely.",
+        description=(
+            "Remove one line from the cart entirely, whatever its quantity. Use this when "
+            "the customer changes their mind about an item; use update_cart_quantity if "
+            "they only want fewer of it."
+        ),
         parameters={
             "type": "object",
             "properties": {"variant_id": {"type": "integer", "description": "From view_cart."}},
