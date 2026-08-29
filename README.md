@@ -14,9 +14,9 @@ Assignment 2 submission. Runs on standard developer hardware with free, publicly
 | --- | --- |
 | This file | Setup, running, configuration, worked examples, project layout |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagram, request lifecycle, module responsibilities |
-| [docs/PROMPT_DESIGN.md](docs/PROMPT_DESIGN.md) | Prompt design, the tool contract, and the AI-interaction improvements made |
+| [docs/PROMPT_DESIGN.md](docs/PROMPT_DESIGN.md) | Prompt design, the tool contract, and the AI-interaction improvements made. **Short note in section 0.** |
 | [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) | Explainability, feedback handling, accuracy governance, human escalation |
-| [docs/ACCURACY_AND_LIMITATIONS.md](docs/ACCURACY_AND_LIMITATIONS.md) | Hallucination risk, what is and is not defended, known limitations |
+| [docs/ACCURACY_AND_LIMITATIONS.md](docs/ACCURACY_AND_LIMITATIONS.md) | Hallucination risk, what is and is not defended, known limitations. **Short note in section 0.** |
 | [docs/DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md) | Key decisions with reasoning, assumptions, what I would improve with more time |
 | [docs/SCALING.md](docs/SCALING.md) | Larger datasets, more users, stricter enterprise governance |
 

@@ -1,6 +1,24 @@
 # Accuracy and Limitations
 
-Required deliverable. The purpose of this document is to be useful to whoever operates this system, which means being specific about what can go wrong rather than reassuring about what cannot.
+Required deliverable. **The short note is section 0; sections 1 to 4 are the detail.** The purpose throughout is to be useful to whoever operates this system, which means being specific about what can go wrong rather than reassuring about what cannot.
+
+---
+
+## 0. The short note
+
+**Hallucination risk is best read in three buckets, not as one number.**
+
+*Structurally impossible.* Wrong price arithmetic, wrong delivery dates, inventing a product, reading another customer's order, cancelling a shipped parcel, charging without confirmation. These cannot happen because the model is never in a position to produce them: money is integer cents formatted once in Python, delivery sentences are pre-written, authorisation is a SQL `WHERE` clause, and the checkout token is withheld from the model entirely.
+
+*Caught by the grounding check.* The model answering a price, stock, order-status, delivery-date or policy question from its own weights when no backend call was made. The output guard replaces such replies. Coverage is **class-level**: it verifies a *kind* of claim had a *kind* of supporting call. It does not verify that the number in the sentence matches the number in the result.
+
+*Remaining, and honestly the real ones.* Numeric transcription drift (low likelihood, high impact - mitigated because cards render from structured data even if the prose drifts); attribute conflation across several products in one result (the most likely remaining error); over-generalising a policy passage; and silent retrieval misses on intent-shaped queries like "something smart for a wedding", which lexical BM25 handles poorly.
+
+**Over-reliance on AI** is addressed by making the model structurally unable to be the authority. If every guardrail were disabled and the system prompt deleted, a customer still could not read another customer's order, cancel a shipped parcel, or trigger a charge. Guardrails are a filter and an audit record; the boundary is in SQL.
+
+**Principal limitations.** No real authentication (session cookie binds to a demo customer). No payment processing. Retrieval is lexical, not semantic, measured at 9/10 top-three and 5/10 rank-one on a ten-query gold set. Three pieces of state live in process memory and would not survive a second worker. PII detection is regex-based and makes no attempt at unstructured PII such as names. Injection defence is probabilistic, which is exactly why authorisation does not depend on it. No adversarial red-team programme has been run.
+
+**Highest-value next step:** span-level attribution, linking each factual span to the tool-result field it came from and verifying it before display. That closes the largest remaining gap.
 
 ---
 

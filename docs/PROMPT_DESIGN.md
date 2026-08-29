@@ -1,6 +1,30 @@
 # Prompt Design, Tool Contract, and AI Interaction Improvements
 
-This document covers the third required deliverable: how prompts were designed, how tools are used, and what was changed to improve the quality of the AI interaction.
+Required deliverable. **The short note is section 0 below; sections 1 to 7 are the supporting detail** for anyone who wants the reasoning or the measurements.
+
+---
+
+## 0. The short note
+
+**Prompt design.** Behavioural guidance is split by concern: *policy* lives in the system prompt (803 tokens), *how to fill a parameter* lives in the tool schema beside that parameter, and *what is true right now* comes only from tool results. Putting parameter guidance in the system prompt is the common expensive mistake, because it bloats a prompt re-sent on every call and separates an instruction from the thing it governs.
+
+The system prompt states rules as actions, not abstractions: "call `search_products` before describing any product" rather than "do not hallucinate products". It injects exactly three dynamic facts - customer name, today's date, cart empty or not - because every fact placed in a prompt can go stale mid-conversation, whereas a tool result is true when read.
+
+**Tool usage.** 17 tools, six of which mutate state. Schema descriptions do more prompt engineering than the system prompt does: they state units ("Dollars, not cents. 'under $50' is 50"), say what to do when a value is unknown ("Only if stated; never infer"), and name the prerequisite tool when an id is missing. Identity is deliberately *not* a parameter - `customer_id` is injected server-side, so the model has no vocabulary for requesting another customer's data. Failures return typed errors with a `recovery_hint` rather than raising, and ambiguity is treated as a failure too, which is what produces "which colour would you like?" instead of a silently chosen colour.
+
+**The strongest technique used.** Facts the model could get wrong arrive pre-computed: `price.display` is already `"$26.99"`, and order tools return a finished delivery sentence. The model repeats rather than derives. It cannot get date arithmetic wrong if it never does date arithmetic - that converts a class of hallucination into one that is structurally impossible, which is far stronger than an instruction.
+
+**AI interaction improvements implemented**, each from an observed failure:
+
+| Observed | Fix |
+| --- | --- |
+| Products formatted as markdown tables duplicating the cards | Named the fields the cards carry, banned the format, gave a wrong/right example |
+| Model quoted the internal field name `delivery_message` | Stopped naming fields; "state its dates in your own words" |
+| Em dashes and curly quotes despite instruction | Moved enforcement into a `str.translate` in the output guard |
+| A correct "we don't stock Gucci" answer was blocked as ungrounded | Added `list_brands` to the supporting tool set; made refusal messages rule-specific |
+| Turns cost ~7,600 tokens against an 8,000/min cap | Intent-based tool routing plus prompt trimming: ~3,500 tokens, 11-42s down to ~1.3s |
+| Model could read the checkout token from a tool result | `model_redacted_fields` strips bearer credentials from the model's copy |
+| A plausible retrieval synonym fix | Measured against a gold set, found neutral, **reverted** |
 
 ---
 
