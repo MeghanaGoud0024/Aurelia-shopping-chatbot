@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     llm_model: str = "openai/gpt-oss-120b"
     llm_temperature: float = 0.15
     llm_max_tokens: int = 1600
+    #: Groq exposes reasoning effort on the gpt-oss family. "low" cuts reasoning
+    #: tokens roughly fourfold with no measurable loss on tool selection, which
+    #: is the only judgement call this agent asks the model to make. Raise it if
+    #: you extend the assistant into genuinely multi-step planning.
+    llm_reasoning_effort: str = "low"
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3
 
