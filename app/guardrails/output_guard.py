@@ -50,7 +50,11 @@ GROUNDING_RULES: list[tuple[str, re.Pattern[str], frozenset[str]]] = [
         re.compile(r"\b(?:in stock|out of stock|sold out|we have|available in|"
                    r"\d+\s+(?:left|remaining|in stock))\b", re.I),
         frozenset({"search_products", "check_availability", "get_product_details",
-                   "add_to_cart", "view_cart", "prepare_checkout"}),
+                   "add_to_cart", "view_cart", "prepare_checkout",
+                   # Catalogue-shape answers ("we do not stock Gucci, we do have
+                   # these brands") are grounded by these too. Omitting them made
+                   # a correct refusal look ungrounded.
+                   "list_brands", "list_categories"}),
     ),
     (
         "order_status_claim",
@@ -82,9 +86,35 @@ DISCLOSURE_REPLACEMENT = (
     "What would you like me to look up?"
 )
 
-UNGROUNDED_REPLACEMENT = (
-    "I don't want to give you a number I haven't verified. Let me check that against our "
-    "systems properly. Could you confirm what you'd like me to look up?"
+#: What to say when a claim was not backed by a tool call. The message is
+#: chosen by rule, because a generic "I can't verify that number" is confusing
+#: when the customer never asked about a number.
+UNGROUNDED_REPLACEMENT: dict[str, str] = {
+    "price_claim": (
+        "I don't want to quote a price I haven't checked. Let me look that up properly - "
+        "which product did you mean?"
+    ),
+    "stock_claim": (
+        "I don't want to tell you something is available without checking stock first. "
+        "Which product and size should I look at?"
+    ),
+    "order_status_claim": (
+        "I don't want to tell you where your order is without checking it. Could you confirm "
+        "the order number and I'll look it up?"
+    ),
+    "delivery_date_claim": (
+        "I don't want to give you a delivery date I haven't verified. Tell me the order number "
+        "and I'll check the live estimate."
+    ),
+    "policy_claim": (
+        "I'd rather quote our actual policy than paraphrase it from memory. Let me look up the "
+        "exact wording - what would you like to know?"
+    ),
+}
+
+UNGROUNDED_FALLBACK = (
+    "I don't want to tell you something I haven't verified against our systems. "
+    "Could you confirm what you'd like me to look up?"
 )
 
 #: Typographic characters models reach for that we do not want in output.
@@ -173,7 +203,8 @@ def screen_output(
                 extra={"rule": rule, "tools_called": sorted(tools_called)},
             )
             return OutputDecision(
-                text=UNGROUNDED_REPLACEMENT, allowed=True, grounded=False,
+                text=UNGROUNDED_REPLACEMENT.get(rule, UNGROUNDED_FALLBACK),
+                allowed=True, grounded=False,
                 rule=rule, action="block",
                 detail=(
                     f"reply made a {rule.replace('_', ' ')} but no supporting tool ran "

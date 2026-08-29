@@ -146,6 +146,28 @@ def test_ungrounded_claims_are_replaced(reply, rule):
     assert not decision.grounded
     assert decision.rule == rule
     assert "$26.99" not in decision.text
+    # The replacement must speak to the claim that fired, not to "a number" the
+    # customer may never have asked about.
+    assert decision.text != reply
+
+
+def test_replacement_message_matches_the_rule():
+    price = screen_output("It costs $40.", tools_called=set()).text
+    delivery = screen_output("It will arrive on Friday.", tools_called=set()).text
+    assert "price" in price.lower()
+    assert "delivery date" in delivery.lower()
+    assert price != delivery
+
+
+def test_catalogue_shape_answers_are_grounded_by_list_brands():
+    """A correct refusal ("we do not stock Gucci, we do have X") must not be
+    replaced just because it contains the words "we have"."""
+    decision = screen_output(
+        "We don't stock Gucci, but we do have bags from The North Face.",
+        tools_called={"list_brands"},
+    )
+    assert decision.grounded
+    assert decision.rule == "clean"
 
 
 @pytest.mark.parametrize("reply,tools", [
