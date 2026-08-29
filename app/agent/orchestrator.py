@@ -260,7 +260,7 @@ class Orchestrator:
             kind="answer",
             label="Answer composed",
             detail=(
-                f"grounded in {len(tools_called)} backend call(s): "
+                f"grounded in {_plural(len(tools_called), 'backend call')}: "
                 f"{', '.join(sorted(tools_called))}"
                 if tools_called else "no backend call was needed for this turn"
             ),
@@ -487,6 +487,11 @@ class Orchestrator:
         return plan.render(), "stop"
 
 
+def _plural(count: int, singular: str, plural_form: str | None = None) -> str:
+    """"1 product" / "3 products". These strings are shown to the customer."""
+    return f"{count:,} {singular if count == 1 else (plural_form or singular + 's')}"
+
+
 def _summarise(tool_name: str, result: Any) -> str:
     """One-line description of a tool result, for the explainability panel."""
     if not isinstance(result, dict):
@@ -497,23 +502,23 @@ def _summarise(tool_name: str, result: Any) -> str:
     if "products" in result:
         total = result.get("total_matches", 0)
         prefix = "at least " if result.get("total_matches_capped") else ""
-        return f"{len(result['products'])} product(s) returned, {prefix}{total} matching"
+        return f"{_plural(len(result['products']), 'product')} returned, {prefix}{total:,} matching"
     if "orders" in result:
-        return f"{result.get('count', len(result['orders']))} order(s) returned"
+        return f"{_plural(result.get('count', len(result['orders'])), 'order')} returned"
     if "order_number" in result and "timeline" in result:
         return f"order {result['order_number']}: {result.get('status_label') or result.get('status')}"
     if "passages" in result:
-        return f"{len(result['passages'])} policy passage(s): " + "; ".join(
+        return f"{_plural(len(result['passages']), 'policy passage')}: " + "; ".join(
             p.get("citation", "") for p in result["passages"][:2]
         )
     if "lines" in result:
         total = (result.get("total") or {}).get("display", "")
-        return f"cart: {result.get('item_count', 0)} item(s), total {total}"
+        return f"cart: {_plural(result.get('item_count', 0), 'item')}, total {total}"
     if "confirmation_token" in result:
         return f"quote issued, total {(result.get('total') or {}).get('display', '')}"
     if "matching_variants" in result:
         available = result.get("any_available")
-        return f"{len(result['matching_variants'])} variant(s), available={available}"
+        return f"{_plural(len(result['matching_variants']), 'variant')}, available={available}"
     if "brands" in result:
         return f"{len(result['brands'])} brands"
     if "categories" in result:
