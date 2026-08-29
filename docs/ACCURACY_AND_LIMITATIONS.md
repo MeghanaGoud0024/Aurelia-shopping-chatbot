@@ -69,6 +69,9 @@ Each of these trades some helpfulness for correctness, on purpose.
 - **Lexical, not semantic.** BM25 with a hand-built synonym table. Reasoning is in [`app/retrieval/bm25.py`](../app/retrieval/bm25.py): at ~1,100 products, lexical matching over a controlled vocabulary of brands, categories and colours is the stronger signal, and a transformer would add a large download plus a torch dependency against the "no special infrastructure" constraint. **The consequence is real:** a query like "something smart for a wedding" has no lexical anchor and will retrieve poorly.
 - **Full index rebuild on startup.** Sub-second at this size. It does not survive a catalogue two orders of magnitude larger.
 - **Policy chunking follows headings.** Good for this corpus, where every section is a self-contained rule. A document with long flowing prose under one heading would produce chunks too large to retrieve precisely.
+- **Measured policy retrieval quality: 9/10 top-three, 5/10 rank-one** on a ten-query gold set, pinned as a regression test in `tests/test_retrieval_and_catalog.py`. Top-three is the metric that matters for the LLM path, since the model receives three passages and synthesises across them. Rank-one matters only for the rule-based fallback, which cannot synthesise and therefore renders all three.
+
+  A hand-tuned duration-synonym expansion was tried against this set - "how long" is a support question that shares no token with "within 30 calendar days" - and **reverted**. It moved errors between queries without improving either metric, and injected a high-IDF term that acted as a topic signal rather than a duration signal. Recorded because a change that measures as neutral should be removed rather than kept on intuition.
 
 ### State that lives in process memory
 

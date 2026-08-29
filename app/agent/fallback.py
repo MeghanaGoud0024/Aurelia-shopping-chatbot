@@ -24,6 +24,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+def _plural(count: int, singular: str, plural_form: str | None = None) -> str:
+    """"1 match" / "3 matches". These strings are shown to the customer."""
+    return f"{count:,} {singular if count == 1 else (plural_form or singular + 's')}"
+
+
 ORDER_NUMBER_RE = re.compile(r"#?\b(\d{3,8})\b")
 PRICE_UNDER_RE = re.compile(r"(?:under|below|less than|cheaper than|max(?:imum)?(?:\s+of)?)\s*[$€£]?\s*(\d+(?:\.\d{1,2})?)", re.I)
 PRICE_OVER_RE = re.compile(r"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?)\s*[$€£]?\s*(\d+(?:\.\d{1,2})?)", re.I)
@@ -119,7 +124,10 @@ class Plan:
             return note
         total = result.get("total_matches", len(products))
         prefix = "at least " if result.get("total_matches_capped") else ""
-        head = f"Found {prefix}{total} match(es). Here are the top {len(products)}:"
+        head = (
+            f"Found {prefix}{_plural(total, 'match', 'matches')}. "
+            f"Here are the top {len(products)}:"
+        )
         lines = []
         for p in products:
             sizes = ", ".join(p.get("available_sizes", [])) or "no sizes in stock"
@@ -162,14 +170,31 @@ class Plan:
 
     @staticmethod
     def _render_policy(result: dict[str, Any]) -> str:
+        """Render every retrieved policy passage, not just the top one.
+
+        The LLM path reads three passages and synthesises the answer across
+        them. This planner cannot synthesise, so ranking errors become answer
+        errors: "how long do I have to return something" ranks the returns
+        *procedure* first, while the 30-day window it actually asks about sits
+        third. Retrieval puts the right passage in the top three on 9 of 10
+        gold queries but at rank one on only 5, so showing all three converts a
+        rank-1 problem into a rank-3 problem and roughly doubles the hit rate.
+
+        The cost is verbosity, which is the correct trade for a degraded mode
+        whose job is to be right rather than elegant. Each passage is trimmed so
+        the whole reply stays readable.
+        """
         passages = result.get("passages", [])
         if not passages:
             return result.get("note") or "I could not find a policy covering that."
-        top = passages[0]
-        body = top["text"].strip()
-        if len(body) > 900:
-            body = body[:900].rsplit(" ", 1)[0] + "..."
-        return f"From our {top['document']} policy ({top['heading']}):\n\n{body}"
+
+        blocks = []
+        for passage in passages[:3]:
+            body = passage["text"].strip()
+            if len(body) > 480:
+                body = body[:480].rsplit(" ", 1)[0] + "..."
+            blocks.append(f"From our {passage['document']} policy ({passage['heading']}):\n\n{body}")
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _render_availability(result: dict[str, Any]) -> str:

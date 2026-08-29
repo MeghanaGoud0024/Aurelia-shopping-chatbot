@@ -197,6 +197,18 @@ Each of these was a behaviour observed in testing, followed by a specific fix.
 
 **Fix.** Parse the wait hint from `Retry-After`, the `x-ratelimit-reset-tokens` header, or the text of the error body, and honour it. Combined with tool routing, turns went from 11-42 seconds to ~1.3 seconds.
 
+### A retrieval synonym fix that measured as neutral, and was reverted
+
+**Observed.** "How long do I have to return something?" ranked the returns *procedure* first, while the passage stating the 30-day window ranked third. The LLM path answered correctly because it receives three passages; the rule-based fallback, which showed only the top one, answered the wrong question.
+
+**Hypothesis.** Duration questions share no vocabulary with the passages that answer them: "how long" against "within 30 calendar days". Adding duration synonyms should be a general improvement, not a fix for one query.
+
+**Measured.** Against a ten-query gold set, three variants: baseline 5/10 rank-one and 9/10 top-three; with the synonyms, still 5/10 and 9/10, with the errors merely relocated; a narrower variant reached 6/10 rank-one but dropped top-three to 8/10.
+
+**Fix.** Reverted the synonyms and changed the fallback to render all three retrieved passages instead. The gold set is now a regression test, so the next retrieval change has a number to beat rather than an intuition to satisfy.
+
+Worth recording as an iteration precisely because it did not work. The plausible fix measured as neutral, and keeping it would have added permanent vocabulary complexity for nothing.
+
 ### The offline planner assigned every women's query to menswear
 
 **Observed.** "women's hoodies on sale" filtered to `gender=men`.

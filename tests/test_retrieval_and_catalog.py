@@ -154,3 +154,52 @@ def test_money_is_formatted_once_in_python(session, catalogue):
     price = result.products[0].price
     assert price.display == "$26.99"
     assert price.amount_cents == 2699
+
+
+# ------------------------------------------------- retrieval quality baseline
+
+#: Gold set for policy retrieval, used as a regression guard rather than as an
+#: accuracy claim. The measured baseline is 5/10 at rank one and 9/10 within the
+#: top three. Top-three is the metric that matters, because the assistant is
+#: given three passages and synthesises across them; rank one only matters for
+#: the rule-based fallback, which is why that renderer shows all three.
+#:
+#: Recorded here so a retrieval change has to justify itself against a number.
+#: A hand-tuned duration-synonym expansion was tried and reverted: it moved
+#: errors between queries without improving either metric.
+POLICY_GOLD: list[tuple[str, str]] = [
+    ("how long do I have to return something", "Return window"),
+    ("how long do refunds take", "Refunds"),
+    ("what is the return window", "Return window"),
+    ("how long does delivery take", "Delivery speeds and cost"),
+    ("can I cancel after it ships", "When an order can be cancelled"),
+    ("do you ship internationally", "International shipping"),
+    ("what size should I buy in Zara", "Brand variation"),
+    ("is my watch under warranty", "Warranty periods"),
+    ("when am I charged", "When you are charged"),
+    ("what happens if delivery fails", "Failed delivery"),
+]
+
+
+def test_policy_retrieval_top3_recall_does_not_regress(session, catalogue):
+    """The passages handed to the model must contain the answer."""
+    hits = 0
+    misses = []
+    for query, expected_heading in POLICY_GOLD:
+        headings = [c.heading for c, _score in retrieval_service.search_policies(query, limit=3)]
+        if expected_heading in headings:
+            hits += 1
+        else:
+            misses.append(f"{query!r} -> {headings}")
+    assert hits >= 9, f"top-3 recall fell to {hits}/10. Misses: {misses}"
+
+
+def test_policy_retrieval_rank1_does_not_regress(session, catalogue):
+    """Weaker guarantee, tracked because the fallback planner depends on it."""
+    hits = sum(
+        1
+        for query, expected in POLICY_GOLD
+        if (found := retrieval_service.search_policies(query, limit=1))
+        and found[0][0].heading == expected
+    )
+    assert hits >= 5, f"rank-1 accuracy fell to {hits}/10"

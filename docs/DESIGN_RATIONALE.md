@@ -125,7 +125,7 @@ Ordered by value, not by effort.
 
 **1. Span-level attribution.** Link every factual span in a reply to the tool result field it came from, verify each before display, and repair or strike what cannot be verified. This closes the largest remaining accuracy gap and turns the trace from *which calls ran* into *which call produced this exact phrase*. Highest-value item available.
 
-**2. A regression evaluation set.** ~150 question-and-expected-tool-call pairs run in CI. Today a prompt change is validated by hand, which does not scale past one engineer. Without this, every prompt edit is a small uncontrolled experiment.
+**2. A regression evaluation set.** ~150 question-and-expected-tool-call pairs run in CI. A ten-query version exists for policy retrieval and already earned its keep: it caused a plausible-sounding synonym improvement to be measured, found neutral, and reverted. Tool selection and grounding need the same treatment. Without it, every prompt edit is a small uncontrolled experiment, and that does not scale past one engineer.
 
 **3. Streaming responses.** Server-sent events with tool-call steps streamed into the trace as they happen. Turns a 3-second wait into 300ms to first token, and makes the grounding story *visible* while it happens.
 
