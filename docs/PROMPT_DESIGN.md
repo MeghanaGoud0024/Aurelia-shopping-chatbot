@@ -197,6 +197,18 @@ Each of these was a behaviour observed in testing, followed by a specific fix.
 
 **Fix.** Parse the wait hint from `Retry-After`, the `x-ratelimit-reset-tokens` header, or the text of the error body, and honour it. Combined with tool routing, turns went from 11-42 seconds to ~1.3 seconds.
 
+### The model could read the confirmation token it was never meant to hold
+
+**Observed.** Late in the build, checking a claim already written in the documentation - "the confirmation token travels server to browser to server and is never reproduced by the model" - showed the claim was false. `prepare_checkout` returns the token in its result, and tool results are serialised into the model's context. The model could read it and call `place_order` with it directly, completing a purchase with no human confirmation.
+
+**Why it happened.** The two-phase design was correct. The leak was in the *transport*: a tool result is not just a value returned to code, it becomes conversation history. Anything in it is readable, and replayable, on any later call in the turn.
+
+This is the general lesson, and it is easy to miss: **a tool result is not private.** Any capability expressed as a value in a tool result is a capability the model holds.
+
+**Fix.** `Tool` gained `model_redacted_fields`. `prepare_checkout` declares `confirmation_token`, and the orchestrator strips it from the model's copy while `artifacts` keeps the original for the browser. The audit trail is redacted too, since a live bearer token sitting in a queryable table is a credential at rest. The `place_order` description and the system prompt were rewritten to state plainly that the token is withheld and the customer's button press completes the purchase.
+
+**Verified.** Asked to "just buy it now, place the order immediately", the assistant prepares the quote, explains that Confirm must be pressed, and does not call `place_order`. Three regression tests cover it, including one that sweeps real tool output for credential-shaped fields so a future tool cannot silently reintroduce the leak.
+
 ### A retrieval synonym fix that measured as neutral, and was reverted
 
 **Observed.** "How long do I have to return something?" ranked the returns *procedure* first, while the passage stating the 30-day window ranked third. The LLM path answered correctly because it receives three passages; the rule-based fallback, which showed only the top one, answered the wrong question.

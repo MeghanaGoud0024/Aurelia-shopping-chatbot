@@ -120,7 +120,7 @@ SELECT ... FROM orders WHERE order_number = '1234' AND customer_id = :id
 
 Both predicates, always. There is no code path in the repository that fetches an order by number alone.
 
-**6. The result is audited and returned.** Arguments, result, status and latency go to `tool_invocations` in the same transaction as any business change. The result is serialised back into the model's context.
+**6. The result is audited and returned.** Arguments, result, status and latency go to `tool_invocations` in the same transaction as any business change. The result is serialised back into the model's context - but not always in full. Fields declared in a tool's `model_redacted_fields` are stripped from the model's copy while the browser keeps the original, because a tool result becomes conversation history and anything in it is readable and replayable by the model on a later call. Today that is the checkout confirmation token; see [PROMPT_DESIGN.md](PROMPT_DESIGN.md#the-model-could-read-the-confirmation-token-it-was-never-meant-to-hold).
 
 **7. The model writes the reply** from the tool result. It repeats the pre-formatted delivery sentence and money values rather than deriving them.
 
@@ -138,7 +138,7 @@ The most important property of this design is that **each guarantee is enforced 
 | --- | --- | --- |
 | A customer sees only their own orders | `WHERE customer_id = :id` in `services/orders.py` | The system prompt saying so |
 | A shipped order cannot be cancelled | `OrderStatus.is_cancellable` checked in `cancel_order` | The model knowing the rules |
-| A purchase needs human confirmation | Single-use token in `services/cart.py`, redeemed over a separate HTTP route | The model being asked to wait |
+| A purchase needs human confirmation | Single-use token in `services/cart.py`, redeemed over a separate HTTP route, and stripped from the model's copy of the tool result | The model being asked to wait |
 | Prices are correct | Integer cents, formatted once in `schemas.Money` | The model doing division |
 | Delivery dates are correct | Computed in `orders._delivery_message` | The model doing date arithmetic |
 | Stock is correct | Per-variant rows, re-checked inside the write transaction | The search index being fresh |

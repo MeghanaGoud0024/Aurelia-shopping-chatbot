@@ -39,7 +39,8 @@ from app.agent.llm import LLMError, LLMResponse, llm_client
 from app.agent.prompts import build_system_prompt
 from app.agent.routing import select_tool_schemas
 from app.agent.tools import (
-    MUTATING_TOOLS, TOOLS_BY_NAME, ToolContext, execute_tool, tool_schemas,
+    MUTATING_TOOLS, TOOLS_BY_NAME, ToolContext, execute_tool, redact_for_model,
+    tool_schemas,
 )
 from app.config import settings
 from app.guardrails.input_guard import screen_input
@@ -398,9 +399,13 @@ class Orchestrator:
                     latency_ms=latency_ms,
                     detail="mutating call" if call.name in MUTATING_TOOLS else "",
                 )
+                # The model receives a redacted copy. `artifacts` above kept the
+                # original, so the browser still gets the real confirmation token.
                 messages.append({
                     "role": "tool", "tool_call_id": call.id, "name": call.name,
-                    "content": json.dumps(result, default=str)[:12_000],
+                    "content": json.dumps(
+                        redact_for_model(TOOLS_BY_NAME.get(call.name), result), default=str
+                    )[:12_000],
                 })
 
         # Iteration budget exhausted. Ask for a final answer with tools removed,
@@ -432,11 +437,15 @@ class Orchestrator:
         if isinstance(result, dict) and result.get("code"):
             error_message = f"{result.get('code')}: {result.get('error', '')}"
 
+        # The audit trail is also redacted. A live bearer token sitting in a
+        # queryable table is a credential at rest; the quote is already
+        # correlatable to its order by session and timestamp.
         record_tool_invocation(
             context.session, session_id=context.session_id, turn_id=turn_id,
             correlation_id=correlation_id.get(), tool_name=call_name,
-            arguments=arguments, result=result, status=status,
-            latency_ms=latency_ms, error_message=error_message,
+            arguments=arguments,
+            result=redact_for_model(TOOLS_BY_NAME.get(call_name), result),
+            status=status, latency_ms=latency_ms, error_message=error_message,
         )
         log = logger.warning if call_name in MUTATING_TOOLS else logger.info
         log(

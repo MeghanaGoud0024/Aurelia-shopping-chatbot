@@ -19,7 +19,7 @@ These cannot occur because the model is never in a position to produce them.
 | Inventing a product that does not exist | Product cards render from `search_products` output. A product not in the result set has no card. |
 | Reading another customer's order | `WHERE customer_id = :id`. No code path omits it. |
 | Cancelling a shipped order | `OrderStatus.is_cancellable` is checked in the service, not described to the model. |
-| Charging without confirmation | `place_order` requires a server-issued single-use token bound to the session and to a fingerprint of the exact basket. |
+| Charging without confirmation | `place_order` requires a server-issued single-use token bound to the session and to a fingerprint of the exact basket. The token is stripped from the model's copy of the tool result, so the model cannot hold or replay it. |
 | Placing an order for out-of-stock goods | Stock is re-checked inside the write transaction. |
 
 ### Caught by the grounding check

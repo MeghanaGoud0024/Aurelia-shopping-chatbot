@@ -6,6 +6,7 @@ customer real money.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -167,3 +168,83 @@ def test_cod_limit_is_enforced(session, catalogue):
     )
     assert isinstance(result, ToolError)
     assert result.code == "COD_LIMIT_EXCEEDED"
+
+
+# ------------------------------------- the token must never reach the model
+
+def test_confirmation_token_is_withheld_from_the_model(session, catalogue):
+    """The purchase guarantee depends on the model never holding the token.
+
+    Tool results are serialised into the model's context, so a token returned
+    by prepare_checkout would otherwise be readable and replayable by the model
+    on a later call - completing a purchase with no human confirmation.
+    """
+    from app.agent.tools import TOOLS_BY_NAME, redact_for_model
+
+    _add_one(session, catalogue)
+    quote = cart_service.prepare_checkout(session, SESSION, catalogue["alice"].id)
+    assert isinstance(quote, CheckoutQuote)
+
+    payload = quote.model_dump(mode="json")
+    model_view = redact_for_model(TOOLS_BY_NAME["prepare_checkout"], payload)
+
+    assert quote.confirmation_token not in json.dumps(model_view), (
+        "the confirmation token leaked into the model-visible tool result"
+    )
+    # The rest of the quote must survive, or the model cannot state the total.
+    assert model_view["total"] == payload["total"]
+    assert model_view["lines"] == payload["lines"]
+
+
+def test_redaction_does_not_mutate_the_original(session, catalogue):
+    """The browser still needs the real token from the same object."""
+    from app.agent.tools import TOOLS_BY_NAME, redact_for_model
+
+    _add_one(session, catalogue)
+    quote = cart_service.prepare_checkout(session, SESSION, catalogue["alice"].id)
+    payload = quote.model_dump(mode="json")
+    original = payload["confirmation_token"]
+
+    redact_for_model(TOOLS_BY_NAME["prepare_checkout"], payload)
+    assert payload["confirmation_token"] == original
+
+    # And the untouched token still works.
+    result = cart_service.place_order(session, SESSION, catalogue["alice"].id, original)
+    assert result["order_placed"] is True
+
+
+def test_no_tool_result_leaks_a_credential_to_the_model(session, catalogue):
+    """Sweep every read-only tool's real output for credential-shaped fields.
+
+    A future tool returning a token without declaring it in
+    model_redacted_fields would silently reintroduce the bypass this test was
+    written for, so the check runs over actual results rather than over the
+    declaration.
+    """
+    from app.agent.tools import TOOLS_BY_NAME, ToolContext, execute_tool, redact_for_model
+
+    context = ToolContext(
+        session=session, session_id=SESSION,
+        customer_id=catalogue["alice"].id, customer_name="Alice Tester",
+    )
+    _add_one(session, catalogue)
+
+    credential_keys = {"confirmation_token", "token", "secret", "api_key", "password"}
+    calls = [
+        ("search_products", {"brand": "Nike"}),
+        ("get_order_status", {"order_number": "1001"}),
+        ("list_my_orders", {}),
+        ("view_cart", {}),
+        ("lookup_policy", {"query": "returns"}),
+        ("prepare_checkout", {}),
+    ]
+    for name, arguments in calls:
+        result, _status = execute_tool(name, arguments, context)
+        model_view = redact_for_model(TOOLS_BY_NAME[name], result)
+        if not isinstance(model_view, dict):
+            continue
+        for key in credential_keys & set(model_view):
+            assert str(model_view[key]).startswith("[withheld]"), (
+                f"{name} exposes '{key}' to the model without declaring it in "
+                f"model_redacted_fields"
+            )

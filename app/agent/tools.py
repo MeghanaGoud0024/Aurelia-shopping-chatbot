@@ -65,6 +65,13 @@ class Tool:
     mutating: bool = False
     #: Tools whose results should be surfaced as UI cards, not just prose.
     renders: str | None = None
+    #: Result fields that must be stripped before the result enters the model's
+    #: context. These are bearer credentials: values that grant an action simply
+    #: by being presented. A tool result is serialised into the conversation, so
+    #: without this the model can read a token it was never meant to hold and
+    #: replay it on a later call. The browser still receives the real value
+    #: through the artifact channel, which never passes through the model.
+    model_redacted_fields: tuple[str, ...] = ()
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -75,6 +82,26 @@ class Tool:
                 "parameters": self.parameters,
             },
         }
+
+
+def redact_for_model(tool: Tool | None, result: Any) -> Any:
+    """Strip bearer credentials from a tool result before the model sees it.
+
+    Returns a copy; the caller keeps the original for the browser. The
+    placeholder is written as an instruction rather than a blank, so the model
+    understands why the field is missing and what happens instead.
+    """
+    if tool is None or not tool.model_redacted_fields or not isinstance(result, dict):
+        return result
+    safe = dict(result)
+    for field in tool.model_redacted_fields:
+        if field in safe:
+            safe[field] = (
+                "[withheld] This value is issued directly to the customer's browser. "
+                "You cannot see it and must not guess it. The customer confirms by "
+                "pressing the button on the quote card."
+            )
+    return safe
 
 
 def _dump(value: Any) -> Any:
@@ -550,14 +577,17 @@ TOOLS: list[Tool] = [
         },
         executor=_prepare_checkout,
         renders="checkout",
+        model_redacted_fields=("confirmation_token",),
     ),
     Tool(
         name="place_order",
         description=(
-            "Commit the order. Requires the exact confirmation_token issued by "
-            "prepare_checkout. You must never invent, guess or reuse a token, and you must "
-            "never call this tool unless the customer has explicitly confirmed the quote in "
-            "this conversation. This is the only irreversible action available to you."
+            "Commit the order. This is the only irreversible action available to you.\n"
+            "You cannot call this successfully: the confirmation token is issued directly to "
+            "the customer's browser and is deliberately withheld from you, so any value you "
+            "supply will be rejected. The customer completes the purchase by pressing Confirm "
+            "on the quote card. Call prepare_checkout, present the total, and let them press "
+            "it. This tool exists so you can explain that step, not perform it."
         ),
         parameters={
             "type": "object",

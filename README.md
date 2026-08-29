@@ -181,7 +181,7 @@ search_products -> check_availability -> add_to_cart
   -> place_order        (redeems the token, decrements stock, creates the order)
 ```
 
-The confirmation token travels server to browser to server and is never reproduced by the model. No sequence of words in a conversation can cause a charge.
+The confirmation token is stripped from the model's copy of the `prepare_checkout` result and travels server to browser to server. The model can see the totals but not the token, so it cannot call `place_order` even if asked to. No sequence of words in a conversation can cause a charge.
 
 ---
 
