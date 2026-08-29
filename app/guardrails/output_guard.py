@@ -87,6 +87,30 @@ UNGROUNDED_REPLACEMENT = (
     "systems properly. Could you confirm what you'd like me to look up?"
 )
 
+#: Typographic characters models reach for that we do not want in output.
+#: The system prompt asks for plain ASCII punctuation and the model mostly
+#: complies, but "mostly" is not a guarantee and this is a ten-line function.
+#: Style rules that can be enforced deterministically should be.
+_PUNCTUATION_MAP = str.maketrans({
+    "\u2014": "-",   # em dash
+    "\u2013": "-",   # en dash
+    "\u2012": "-",   # figure dash
+    "\u2011": "-",   # non-breaking hyphen
+    "\u2010": "-",   # hyphen
+    "\u2018": "'",   # left single quote
+    "\u2019": "'",   # right single quote
+    "\u201c": '"',   # left double quote
+    "\u201d": '"',   # right double quote
+    "\u00a0": " ",   # non-breaking space
+    "\u2026": "...",
+})
+
+
+def normalise_punctuation(text: str) -> str:
+    """Fold typographic punctuation to plain ASCII."""
+    return text.translate(_PUNCTUATION_MAP)
+
+
 TRUNCATION_SUFFIX = (
     "\n\n(My answer was cut short. Ask me to continue and I'll pick up where I left off.)"
 )
@@ -110,6 +134,7 @@ def screen_output(
     finish_reason: str = "stop",
 ) -> OutputDecision:
     """Screen an assistant reply before it is shown to the customer."""
+    reply = normalise_punctuation(reply)
     if not reply.strip():
         return OutputDecision(
             text="I wasn't able to put together an answer for that. Could you rephrase it?",
@@ -137,7 +162,7 @@ def screen_output(
         )
 
     redaction = redact(reply)
-    text = redaction.text
+    text = normalise_punctuation(redaction.text)
     if redaction.redacted:
         logger.warning("guardrail.output_redacted", extra={"findings": redaction.findings})
 

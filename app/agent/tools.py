@@ -281,70 +281,34 @@ TOOLS: list[Tool] = [
     Tool(
         name="search_products",
         description=(
-            "Search the Aurelia product catalogue. Use this for any question about what is "
-            "sold, what is available, prices, brands, or recommendations. Always call this "
-            "before describing any product: never answer from memory. Put the shopper's "
-            "descriptive words in `query` and put anything that maps to a real attribute "
-            "(brand, size, colour, price ceiling) into its own parameter, because those are "
-            "applied as hard filters while `query` is a relevance ranking."
+            "Search the product catalogue. Call this before describing or pricing any "
+            "product; never answer from memory. Put descriptive words in `query`; put "
+            "anything matching a real attribute (brand, size, colour, price) in its own "
+            "parameter. Parameters filter, `query` only ranks."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "Free-text description, e.g. 'lightweight running shoes' or "
-                        "'t-shirt'. Omit if the request is purely attribute-based."
-                    ),
-                },
-                "brand": {
-                    "type": "string",
-                    "description": (
-                        "Brand name exactly as the shopper said it; near-misses such as "
-                        "'addidas' are resolved server-side. If the brand is not stocked the "
-                        "tool says so explicitly, so pass it through rather than guessing."
-                    ),
-                },
-                "category": {
-                    "type": "string",
-                    "description": "Top-level category: Topwear, Bottomwear, Footwear, Outerwear, Accessories.",
-                },
-                "subcategory": {
-                    "type": "string",
-                    "description": (
-                        "Specific product type, e.g. 'T-Shirt', 'Jeans', 'Running Shoes', "
-                        "'Hoodie', 'Backpack'. Prefer this over `query` when the shopper "
-                        "names a product type, because it filters rather than ranks."
-                    ),
-                },
+                "query": {"type": "string",
+                          "description": "Descriptive words only, e.g. 'lightweight running'. Omit if purely attribute-based."},
+                "brand": {"type": "string",
+                          "description": "As the shopper said it; misspellings are resolved server-side. Unstocked brands are reported explicitly."},
+                "category": {"type": "string",
+                             "enum": ["Topwear", "Bottomwear", "Footwear", "Outerwear", "Accessories"]},
+                "subcategory": {"type": "string",
+                                "description": "Product type, e.g. 'T-Shirt', 'Jeans', 'Running Shoes', 'Hoodie'. Prefer over `query` when named."},
                 "gender": {"type": "string", "enum": ["men", "women", "unisex"]},
-                "size": {
-                    "type": "string",
-                    "description": (
-                        "Apparel size (XS, S, M, L, XL, XXL) or US shoe size (6-12). "
-                        "Only pass this when the shopper stated a size; do not infer one."
-                    ),
-                },
-                "color": {"type": "string", "description": "Colour name, e.g. Black, Navy, Olive."},
-                "min_price": {
-                    "type": "number",
-                    "description": "Minimum price in dollars, not cents. 40 means $40.00.",
-                },
-                "max_price": {
-                    "type": "number",
-                    "description": "Maximum price in dollars, not cents. 'under $50' is max_price 50.",
-                },
-                "min_rating": {"type": "number", "description": "Minimum star rating, 0 to 5."},
-                "in_stock_only": {
-                    "type": "boolean",
-                    "description": "Defaults to true. Only set false if the shopper explicitly asks to see sold-out items.",
-                },
-                "on_sale_only": {"type": "boolean", "description": "Restrict to discounted products."},
+                "size": {"type": "string",
+                         "description": "XS-XXL or US shoe 6-12. Only if stated; never infer."},
+                "color": {"type": "string"},
+                "min_price": {"type": "number", "description": "Dollars, not cents."},
+                "max_price": {"type": "number", "description": "Dollars, not cents. 'under $50' is 50."},
+                "min_rating": {"type": "number", "description": "0 to 5."},
+                "in_stock_only": {"type": "boolean", "description": "Default true; false only if sold-out items are asked for."},
+                "on_sale_only": {"type": "boolean"},
                 "sort": {"type": "string", "enum": _SORT_ENUM,
-                         "description": "Use price_low_to_high for 'cheapest', rating for 'best'."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 24,
-                          "description": "How many products to return. Default 6; keep it small unless asked for more."},
+                         "description": "price_low_to_high for 'cheapest', rating for 'best'."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 24, "description": "Default 6."},
             },
             "required": [],
         },

@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,15 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+#: Providers often state the exact wait in the 429 body ("Please try again in
+#: 7.005s"). Honouring that beats guessing with exponential backoff, because
+#: a token-per-minute window refills on a schedule we can read rather than
+#: probe.
+_RETRY_AFTER_IN_BODY = re.compile(r"try again in ([0-9.]+)\s*s", re.I)
+#: Upper bound on a single honoured wait. Beyond this the customer is better
+#: served by an honest failure than by a request that appears to hang.
+MAX_RATE_LIMIT_WAIT_SECONDS = 25.0
 
 
 class LLMError(RuntimeError):
@@ -95,6 +105,46 @@ def _parse_arguments(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _provider_wait_hint(response: httpx.Response) -> float | None:
+    """Extract how long the provider wants us to wait, in seconds."""
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+    match = _RETRY_AFTER_IN_BODY.search(response.text or "")
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+    reset = response.headers.get("x-ratelimit-reset-tokens")
+    if reset:
+        parsed = _parse_duration(reset)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_duration(value: str) -> float | None:
+    """Parse Groq-style durations such as '7.005s', '1m26.4s', '615ms'."""
+    value = value.strip().lower()
+    match = re.fullmatch(r"(?:(\d+)m)?([0-9.]+)(ms|s)?", value)
+    if not match:
+        return None
+    minutes, amount, unit = match.groups()
+    try:
+        seconds = float(amount)
+    except ValueError:
+        return None
+    if unit == "ms":
+        seconds /= 1000.0
+    if minutes:
+        seconds += int(minutes) * 60
+    return seconds
+
+
 class LLMClient:
     """Async client for chat completions and single-shot classification."""
 
@@ -149,14 +199,20 @@ class LLMClient:
                 )
                 if not retryable:
                     break
-                # Honour the provider's own backoff instruction when present.
-                retry_after = response.headers.get("retry-after")
-                if retry_after:
-                    try:
-                        await asyncio.sleep(min(float(retry_after), 10.0))
-                        continue
-                    except ValueError:
-                        pass
+
+                # Honour the provider's own backoff instruction when present:
+                # the Retry-After header, the reset hint on the rate-limit
+                # headers, or the wait stated in the error body.
+                wait = _provider_wait_hint(response)
+                if wait is not None and attempt < settings.llm_max_retries:
+                    capped = min(wait + 0.4, MAX_RATE_LIMIT_WAIT_SECONDS)
+                    logger.warning(
+                        "llm.rate_limited",
+                        extra={"attempt": attempt, "provider_wait_s": round(wait, 2),
+                               "sleeping_s": round(capped, 2)},
+                    )
+                    await asyncio.sleep(capped)
+                    continue
 
             if attempt < settings.llm_max_retries:
                 backoff = min(2 ** (attempt - 1), 8) * (0.7 + random.random() * 0.6)

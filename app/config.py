@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     # ----- Agent loop ----------------------------------------------------
     max_tool_iterations: int = 6
     max_tool_calls_per_turn: int = 10
+    #: Send only the tool schemas an intent router judges relevant, instead of
+    #: all seventeen on every call. Cuts the per-call token floor by roughly
+    #: half, which matters on a rate-limited provider tier. Turn it off when
+    #: token budget is not the binding constraint. See app/agent/routing.py.
+    tool_routing_enabled: bool = True
 
     # ----- Rate limiting -------------------------------------------------
     rate_limit_requests: int = 30
