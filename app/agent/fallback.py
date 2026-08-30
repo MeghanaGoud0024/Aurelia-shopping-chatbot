@@ -35,9 +35,13 @@ ORDER_NUMBER_RE = re.compile(r"#?\b(\d{3,8})\b")
 # the same request without quotes. Requires "to ... bag/cart" so it never
 # fires on an unrelated sentence that merely contains the word "add".
 ADD_TO_CART_RE = re.compile(
-    r'add\s+"(?P<quoted>[^"]+)"\s+to\s+(?:my\s+)?(?:bag|cart|basket)'
-    r'|add\s+(?:the\s+|a\s+|an\s+)?(?P<loose>.+?)\s+to\s+(?:my\s+)?(?:bag|cart|basket)',
+    r'add\s+"(?P<quoted>[^"]+)"\s+to\s+(?:my\s+)?(?:bag|cart|basket)\b(?P<quoted_details>.*)'
+    r'|add\s+(?:the\s+|a\s+|an\s+)?(?P<loose>.+?)\s+to\s+(?:my\s+)?(?:bag|cart|basket)\b(?P<loose_details>.*)',
     re.I,
+)
+ADD_SIZE_RE = re.compile(r"\bsize\s+(XS|S|M|L|XL|XXL|\d{1,2})\b", re.I)
+ADD_COLOR_RE = re.compile(
+    r"\bcolou?r\s+(?P<color>.+?)(?=\s+(?:and\s+)?size\b|$)", re.I
 )
 PRICE_UNDER_RE = re.compile(r"(?:under|below|less than|cheaper than|max(?:imum)?(?:\s+of)?)\s*[$€£]?\s*(\d+(?:\.\d{1,2})?)", re.I)
 PRICE_OVER_RE = re.compile(r"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?)\s*[$€£]?\s*(\d+(?:\.\d{1,2})?)", re.I)
@@ -310,6 +314,24 @@ def _detect_policy_topic(text: str) -> str | None:
     return best_topic
 
 
+def _extract_add_selection(details: str) -> dict[str, str]:
+    """Extract the size/colour suffix emitted by a product-card button.
+
+    Product-card clicks are deliberately ordinary chat messages so they use
+    the same audited tool path as typed requests. Keep the already-selected
+    variant attributes when parsing that message; otherwise the cart service
+    rightly asks the shopper to choose them again.
+    """
+    selection: dict[str, str] = {}
+    if size := ADD_SIZE_RE.search(details):
+        selection["size"] = size.group(1).upper()
+    if color := ADD_COLOR_RE.search(details):
+        selected_color = color.group("color").strip(" .,!?;")
+        if selected_color:
+            selection["color"] = selected_color
+    return selection
+
+
 #: Words that are a bare answer to a clarifying question rather than a new
 #: request. Kept deliberately small - anything longer or more sentence-like is
 #: treated as a fresh intent, so a genuine new question is never swallowed as
@@ -413,7 +435,9 @@ def plan_without_llm(message: str) -> Plan:
         # search_products would - close enough for a common phrasing like
         # "add the nike trail tee to my bag" even without exact quoting.
         name = add_match.group("quoted") or add_match.group("loose")
-        return Plan("add_to_cart", [("add_to_cart", {"product_name": name.strip()})])
+        details = add_match.group("quoted_details") or add_match.group("loose_details") or ""
+        arguments = {"product_name": name.strip(), **_extract_add_selection(details)}
+        return Plan("add_to_cart", [("add_to_cart", arguments)])
     if any(w in lowered for w in ("my cart", "my basket", "what's in my cart", "view cart", "show cart")):
         return Plan("view_cart", [("view_cart", {})])
     if any(w in lowered for w in ("checkout", "check out", "place my order", "buy it now")):

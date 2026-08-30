@@ -188,6 +188,18 @@ def test_add_to_cart_intent_extracts_the_quoted_name_exactly():
     assert args["product_name"] == "Nike Core Unisex T-Shirt"
 
 
+def test_card_add_to_cart_carries_selected_size_and_colour():
+    """The product-card button must not make the customer pick again in chat."""
+    _name, args = plan_without_llm(
+        'Add "Puma Trail Women\'s Jeans" to my bag in size M and colour Cream'
+    ).calls[0]
+    assert args == {
+        "product_name": "Puma Trail Women's Jeans",
+        "size": "M",
+        "color": "Cream",
+    }
+
+
 def test_add_to_cart_intent_does_not_fire_on_unrelated_add_mentions():
     """'add' alone is not enough; it must be paired with 'to ... bag/cart'."""
     assert plan_without_llm("add more items to my order").intent != "add_to_cart"
