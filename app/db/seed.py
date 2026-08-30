@@ -152,6 +152,30 @@ SHOWCASE_ORDERS: dict[str, OrderStatus] = {
     "1350": OrderStatus.RETURN_REQUESTED,  # in the returns flow
 }
 
+# Showcase orders must belong to the account the demo session signs in as, or
+# the documented examples return ORDER_NOT_FOUND - correctly, since the order
+# would belong to someone else. Owning them is what makes "cancel order 1305"
+# demonstrable rather than a demonstration of the authorisation boundary.
+#
+# The history below gives that same account a plausible purchase record so the
+# dashboard has something real to chart: statuses spread across the funnel and
+# orders spread across eight months. Values are (status, days_ago).
+DEMO_HISTORY_ORDERS: dict[str, tuple[OrderStatus, int]] = {
+    "1019": (OrderStatus.DELIVERED, 232),
+    "1044": (OrderStatus.DELIVERED, 201),
+    "1071": (OrderStatus.RETURNED, 178),
+    "1096": (OrderStatus.DELIVERED, 154),
+    "1123": (OrderStatus.DELIVERED, 131),
+    "1147": (OrderStatus.CANCELLED, 118),
+    "1168": (OrderStatus.DELIVERED, 96),
+    "1189": (OrderStatus.DELIVERED, 74),
+    "1212": (OrderStatus.DELIVERED, 58),
+    "1247": (OrderStatus.DELIVERED, 41),
+    "1266": (OrderStatus.DELIVERED, 27),
+    "1319": (OrderStatus.PACKED, 2),
+    "1372": (OrderStatus.PENDING_PAYMENT, 0),
+}
+
 CARRIERS = ["Aurelia Express", "SwiftPost", "GlobalShip", "MetroCourier", "BluePeak Logistics"]
 HUBS = ["Regional Sortation Hub", "National Distribution Centre", "Local Delivery Depot",
         "International Gateway", "City Fulfilment Centre"]
@@ -369,10 +393,23 @@ def _build_orders(
     statuses = [s for s, _ in status_pool]
     weights = [w for _, w in status_pool]
 
+    # The account the demo session signs in as. Deterministic, so the documented
+    # examples always resolve to the signed-in customer.
+    demo_customer = customers[0]
+
     for _ in range(420):
         order_number += 1
-        customer = rng.choice(customers)
-        status = SHOWCASE_ORDERS.get(str(order_number)) or rng.choices(statuses, weights=weights)[0]
+        key = str(order_number)
+        days_override: int | None = None
+
+        if key in SHOWCASE_ORDERS:
+            customer, status = demo_customer, SHOWCASE_ORDERS[key]
+        elif key in DEMO_HISTORY_ORDERS:
+            customer = demo_customer
+            status, days_override = DEMO_HISTORY_ORDERS[key]
+        else:
+            customer = rng.choice(customers)
+            status = rng.choices(statuses, weights=weights)[0]
         carrier = rng.choice(CARRIERS)
 
         # Age the order so that in-flight statuses are recent and delivered
@@ -385,6 +422,8 @@ def _build_orders(
             days_ago = rng.randint(2, 60)
         else:
             days_ago = rng.randint(0, 3)
+        if days_override is not None:
+            days_ago = days_override
         placed_at = now - timedelta(days=days_ago, hours=rng.randint(0, 23), minutes=rng.randint(0, 59))
 
         street = f"{rng.randint(1, 480)} {rng.choice(STREETS)}"

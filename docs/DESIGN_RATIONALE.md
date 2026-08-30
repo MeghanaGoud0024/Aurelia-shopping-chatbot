@@ -74,7 +74,7 @@ Writing them on the same session as business data means an audit record and the 
 
 "Must run from a clean environment using the commands you document" reads badly if the commands include installing Node and running a bundler. The reviewer installs Python dependencies and opens a browser. A design-token system gives the polish a component library would have, without the toolchain.
 
-**The cost:** ~900 lines of DOM code that React would have made shorter. Worth it for a single-page application at this size.
+**The cost:** ~1,000 lines of DOM code that React would have made shorter. Worth it for a single-page application at this size.
 
 ### Errors as data, not exceptions
 

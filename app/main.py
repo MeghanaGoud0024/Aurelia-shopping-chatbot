@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, catalog, chat, feedback, orders
+from app.api import admin, catalog, chat, dashboard, feedback, orders
 from app.agent.llm import llm_client
 from app.config import WEB_DIR, settings
 from app.db.seed import seed_database
@@ -121,6 +121,7 @@ api_prefix = "/api"
 app.include_router(chat.router, prefix=api_prefix)
 app.include_router(catalog.router, prefix=api_prefix)
 app.include_router(orders.router, prefix=api_prefix)
+app.include_router(dashboard.router, prefix=api_prefix)
 app.include_router(feedback.router, prefix=api_prefix)
 app.include_router(admin.router, prefix=api_prefix)
 
