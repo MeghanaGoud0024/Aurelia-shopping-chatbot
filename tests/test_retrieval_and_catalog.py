@@ -203,3 +203,89 @@ def test_policy_retrieval_rank1_does_not_regress(session, catalogue):
         and found[0][0].heading == expected
     )
     assert hits >= 5, f"rank-1 accuracy fell to {hits}/10"
+
+
+# --------------------------------------------- slim_for_model (token budget)
+
+def test_slim_for_model_shrinks_search_results_substantially(session, catalogue):
+    """Regression guard on the actual saving, not just presence/absence of
+    fields: this is a real token-budget lever and a change that quietly
+    erodes it back toward the original size should fail loudly."""
+    import json
+
+    from app.agent.tools import ToolContext, execute_tool, slim_for_model
+
+    ctx = ToolContext(session=session, session_id="s", customer_id=catalogue["alice"].id,
+                      customer_name="Alice Tester")
+    result, _status = execute_tool("search_products", {"query": "shirt"}, ctx)
+    full = len(json.dumps(result, default=str))
+    slim = len(json.dumps(slim_for_model("search_products", result), default=str))
+    assert slim < full * 0.7, f"expected at least 30% smaller, got {full} -> {slim}"
+
+
+def test_slim_for_model_keeps_everything_the_model_is_told_to_use(session, catalogue):
+    """Every field the system prompt or a tool description instructs the model
+    to read and repeat must survive slimming - only fields nothing tells the
+    model to use are fair game to drop."""
+    from app.agent.tools import ToolContext, execute_tool, slim_for_model
+
+    ctx = ToolContext(session=session, session_id="s", customer_id=catalogue["alice"].id,
+                      customer_name="Alice Tester")
+    result, _status = execute_tool("search_products", {"brand": "Nike"}, ctx)
+    slim = slim_for_model("search_products", result)
+    product = slim["products"][0]
+
+    for field in ("product_id", "name", "brand", "subcategory", "price", "list_price",
+                  "discount_pct", "rating", "review_count", "in_stock",
+                  "available_sizes", "available_colors"):
+        assert field in product, f"model-relevant field '{field}' was dropped"
+
+    # Money fields flatten to the display string the model is told to quote
+    # verbatim - never the cents/currency it's told never to compute with.
+    assert product["price"] == "$26.99"
+    assert isinstance(product["price"], str)
+
+
+def test_slim_for_model_drops_fields_nothing_tells_the_model_to_use(session, catalogue):
+    from app.agent.tools import ToolContext, execute_tool, slim_for_model
+
+    ctx = ToolContext(session=session, session_id="s", customer_id=catalogue["alice"].id,
+                      customer_name="Alice Tester")
+    result, _status = execute_tool("search_products", {"brand": "Nike"}, ctx)
+    slim = slim_for_model("search_products", result)
+
+    assert "facets" not in slim
+    product = slim["products"][0]
+    for field in ("sku", "category", "gender", "total_stock", "relevance"):
+        assert field not in product
+
+
+def test_slim_for_model_does_not_touch_the_original_result(session, catalogue):
+    """The artifact channel (product cards in the UI) reads the untouched
+    result - slimming must return a copy, never mutate in place."""
+    from app.agent.tools import ToolContext, execute_tool, slim_for_model
+
+    ctx = ToolContext(session=session, session_id="s", customer_id=catalogue["alice"].id,
+                      customer_name="Alice Tester")
+    result, _status = execute_tool("search_products", {"brand": "Nike"}, ctx)
+    slim_for_model("search_products", result)
+    assert "facets" in result
+    assert "sku" in result["products"][0]
+    assert isinstance(result["products"][0]["price"], dict)
+
+
+def test_slim_for_model_leaves_unrelated_tools_untouched(session, catalogue):
+    from app.agent.tools import ToolContext, execute_tool, slim_for_model
+
+    ctx = ToolContext(session=session, session_id="s", customer_id=catalogue["alice"].id,
+                      customer_name="Alice Tester")
+    result, _status = execute_tool("list_brands", {}, ctx)
+    assert slim_for_model("list_brands", result) == result
+
+
+def test_slim_for_model_passes_through_non_dict_and_error_results():
+    from app.agent.tools import slim_for_model
+
+    assert slim_for_model("search_products", "not a dict") == "not a dict"
+    error = {"code": "PRODUCT_NOT_FOUND", "error": "no such product"}
+    assert slim_for_model("search_products", error) == error

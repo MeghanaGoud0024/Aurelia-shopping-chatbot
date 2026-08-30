@@ -104,6 +104,53 @@ def redact_for_model(tool: Tool | None, result: Any) -> Any:
     return safe
 
 
+#: Fields on a product entry that exist for the UI card, not for the model's
+#: reply. Every one of them is either purely cosmetic (sku), redundant with
+#: something else already in the payload (this catalogue's product names
+#: already say "Men's"/"Women's", so `gender` repeats it; `category` repeats
+#: what `subcategory` already says more specifically), or something the model
+#: is explicitly told never to use (the tool descriptions instruct it to quote
+#: `price.display` verbatim, so the cents/currency behind that string cost
+#: tokens without ever being read).
+_PRODUCT_FIELDS_DROPPED_FOR_MODEL = frozenset({"sku", "category", "gender", "total_stock", "relevance"})
+
+
+def _slim_product_for_model(product: dict[str, Any]) -> dict[str, Any]:
+    slim = {k: v for k, v in product.items() if k not in _PRODUCT_FIELDS_DROPPED_FOR_MODEL}
+    for money_field in ("price", "list_price"):
+        value = slim.get(money_field)
+        if isinstance(value, dict) and "display" in value:
+            slim[money_field] = value["display"]
+    return slim
+
+
+def slim_for_model(tool_name: str, result: Any) -> Any:
+    """Shrink a tool result before it enters the model's context.
+
+    Distinct from `redact_for_model`: that function removes what the model
+    must never see (a credential); this one removes what the model has no use
+    for, purely to cut prompt size. Both run at the same call site and neither
+    touches what `TurnArtifacts.absorb` keeps for the browser - the UI card
+    always renders from the untouched original result.
+
+    Product search is the one result shape big enough for this to matter: it
+    can carry up to 24 products, so trimming ~40% off each entry compounds.
+    `facets` is dropped entirely for the model for a more specific reason than
+    size - nothing in the system prompt or any tool description tells the
+    model it exists or what to do with it, so it is pure unused weight in this
+    copy specifically, not a capability being removed.
+    """
+    if not isinstance(result, dict):
+        return result
+    if tool_name == "search_products" and isinstance(result.get("products"), list):
+        slim = {k: v for k, v in result.items() if k != "facets"}
+        slim["products"] = [_slim_product_for_model(p) for p in result["products"]]
+        return slim
+    if tool_name == "get_product_details" and isinstance(result.get("variants"), list):
+        return _slim_product_for_model(result)
+    return result
+
+
 def _dump(value: Any) -> Any:
     """Normalise an executor's return value into JSON-safe data."""
     if isinstance(value, BaseModel):

@@ -163,6 +163,18 @@ Three properties keep it safe:
 
 Routing is a token optimisation and **never a security control**. It never removes a capability the customer is entitled to, only defers loading it. `AURELIA_TOOL_ROUTING_ENABLED=false` sends everything, which is the right setting on a tier with headroom.
 
+### A second pass, once real conversations ran long enough to show what the first one missed
+
+The table above accounts for tool *schemas* - what is offered to the model. It does not account for tool *results* - what comes back and gets re-injected into the next call in the same turn - and in real usage that turned out to be the larger gap. Logged `prompt_tokens` on production calls kept coming in at 2,500 to 3,900, well above what the schema-only accounting predicted. Three further cuts, each measured against real code rather than estimated:
+
+**Tool results were carrying UI-only weight.** A `search_products` result returns up to 24 products, and each one carried fields nothing in the system prompt or any tool description ever told the model to use: `sku`, `category` and `gender` (redundant with the product name, which already says "Men's T-Shirt"), `total_stock` (the model works from `available_sizes`/`in_stock`, never a raw count), a `relevance` score, and full `{amount_cents, currency, display}` money objects when every tool description already instructs the model to quote `display` verbatim and never compute with the rest. `facets` - brand/category counts across the full result set - was dropped from the model's copy entirely, for a sharper reason than size: nothing in the prompt or any tool description tells the model it exists, so it was pure unread weight in that specific copy. [`slim_for_model()`](../app/agent/tools.py) strips exactly this, for the model's copy only - the UI still renders from the untouched original via `TurnArtifacts`, and the audit trail still records the full result. Measured on a real Nike search: **975 -> 544 tokens, a 44% cut**, on a payload that scales with result count.
+
+**"Catalog implies cart" was taxing the most common intent for the least common need.** Every plain "show me X" picked up four cart tools it had no use for, on the theory that browsing usually leads to buying. Removing it needed the cart *signal* itself broadened first - `add (?:it|this|that|to)` as an enumerated list missed ordinary phrasing like "add the cheapest one" - to a bare `\badd\b`, which catches real purchase intent directly rather than inferring it from browsing. (`\b` word boundaries mean it doesn't fire inside "addition" or "address".) With that gap closed, the blanket implication had nothing left to cover. Measured: a plain product browse dropped from **9 tools (~1,475 tok) to 5 tools (~901 tok)**, a 39% cut on the single most frequent turn shape, while "add the cheapest one to my cart" still reaches `add_to_cart` correctly - now from the signal matching directly, not from an unconditional grant every browse turn paid for.
+
+**Conversation history was replaying more than a shopping exchange needs.** `HISTORY_TURNS` capped replay at 12 messages (6 round trips); cut to 8 (4 round trips) once a long testing session showed history as a real, growing share of prompt size on later turns. Still enough for "the second one" or "that jacket" to resolve against anything said in the last few exchanges.
+
+Combined effect on a product-browse turn's first call, the piece easiest to verify against a real log line: **~2,450 estimated -> 1,549 tokens actually logged** in production after deploying all three.
+
 ---
 
 ## 5. Model parameters

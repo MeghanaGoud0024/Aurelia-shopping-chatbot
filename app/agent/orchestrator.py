@@ -41,7 +41,7 @@ from app.agent.prompts import build_system_prompt
 from app.agent.routing import select_tool_schemas
 from app.agent.tools import (
     MUTATING_TOOLS, TOOLS_BY_NAME, ToolContext, execute_tool, redact_for_model,
-    tool_schemas,
+    slim_for_model, tool_schemas,
 )
 from app.config import settings
 from app.guardrails.input_guard import screen_input
@@ -55,10 +55,15 @@ from app.services import cart as cart_service
 
 logger = logging.getLogger(__name__)
 
-#: How many prior messages of a conversation are replayed to the model. Deep
-#: enough to resolve "the second one" or "that jacket", shallow enough that the
-#: prompt does not grow without bound over a long session.
-HISTORY_TURNS = 12
+#: How many prior *messages* (not turns - each turn appends one user message
+#: and one assistant reply, so this is twice the number of round trips kept)
+#: are replayed to the model. 8 messages is 4 round trips: enough to resolve
+#: "the second one" or "that jacket" against anything said in the last few
+#: exchanges, without paying full prompt cost for a conversation's entire
+#: length on every subsequent call. Cut from 12 after measuring that a long
+#: session's history was a real, growing share of prompt size - see the
+#: token-budget notes in PROMPT_DESIGN.md.
+HISTORY_TURNS = 8
 
 FAILURE_MESSAGE = (
     "I'm having trouble reaching our systems right now, so I'd rather not guess. "
@@ -421,13 +426,16 @@ class Orchestrator:
                     latency_ms=latency_ms,
                     detail="mutating call" if call.name in MUTATING_TOOLS else "",
                 )
-                # The model receives a redacted copy. `artifacts` above kept the
-                # original, so the browser still gets the real confirmation token.
+                # The model receives a redacted, slimmed copy. `artifacts` above
+                # kept the original in full, so the browser still gets the real
+                # confirmation token and every field a UI card renders - only
+                # what enters the LLM's own context is trimmed down.
+                model_view = redact_for_model(
+                    TOOLS_BY_NAME.get(call.name), slim_for_model(call.name, result)
+                )
                 messages.append({
                     "role": "tool", "tool_call_id": call.id, "name": call.name,
-                    "content": json.dumps(
-                        redact_for_model(TOOLS_BY_NAME.get(call.name), result), default=str
-                    )[:12_000],
+                    "content": json.dumps(model_view, default=str)[:12_000],
                 })
 
         # Iteration budget exhausted. Ask for a final answer with tools removed,

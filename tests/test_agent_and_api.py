@@ -130,6 +130,39 @@ def test_routing_reduces_the_payload():
     assert len(routed) < len(TOOLS)
 
 
+def test_pure_browsing_does_not_pay_for_cart_tools():
+    """catalog no longer implies cart: a plain "show me X" carries no purchase
+    intent and should not be billed for add_to_cart/checkout schemas on every
+    single search. This was a real, constant token tax on the most common
+    intent - removed once the cart signal below was broadened to catch actual
+    purchase phrasing directly, which is the regression this guards."""
+    names = set(select_tool_names("show me nike t-shirts"))
+    assert "search_products" in names
+    assert "add_to_cart" not in names
+    assert "prepare_checkout" not in names
+
+
+@pytest.mark.parametrize("message", [
+    "add the cheapest one to my cart",
+    "add it to my bag",
+    "please add 2 of these",
+    "add a medium in black",
+])
+def test_natural_add_phrasing_reaches_cart_tools_without_the_old_implication(message):
+    """The gap the removed catalog->cart implication used to paper over: none
+    of these say the bare word "cart"/"bag"/"basket", but each is obviously a
+    request to add something. The broadened \badd\b signal must catch them
+    on its own now that the blanket rule is gone."""
+    assert "add_to_cart" in select_tool_names(message)
+
+
+def test_add_does_not_false_positive_inside_another_word():
+    """\badd\b must not fire on "addition" or "address" - a real risk of
+    broadening from an enumerated list to a bare word."""
+    names = select_tool_names("what is the shipping address for my order")
+    assert "add_to_cart" not in names
+
+
 # ---------------------------------------------------------- fallback planner
 
 @pytest.mark.parametrize("message,intent", [

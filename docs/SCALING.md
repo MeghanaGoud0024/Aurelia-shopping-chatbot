@@ -65,7 +65,7 @@ Heading-based chunking holds well up to a few hundred documents. Beyond that:
 
 ### The immediate blocker: LLM quota
 
-At ~3,500 tokens per turn, an 8,000 TPM tier supports roughly two turns per minute. This is the binding constraint long before any infrastructure limit.
+A simple turn now costs roughly 1,500 to 2,500 tokens after the routing and payload-slimming work described in [PROMPT_DESIGN.md](PROMPT_DESIGN.md#4-tool-routing) - down from an earlier ~3,500, though a turn touching a large product search or a long conversation history still runs higher. Even the improved figure means an 8,000 TPM tier supports only a handful of turns per minute, and the free tier's **200,000 tokens-per-day** ceiling is the harder limit in practice: it is what actually blocked live testing repeatedly while building this, not the per-minute window. Either way, provider quota is the binding constraint long before any infrastructure limit. (The quota chip and Live/Offline toggle in the interface, covered in [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md#an-honest-quota-display-and-a-runtime-toggle-for-the-fallback-planner), are the operational answer at this scale; the items below are what changes at real production scale.)
 
 1. **Paid tier.** Millions of tokens per minute. Solves it up to real scale.
 2. **Semantic caching.** Catalogue questions repeat heavily. Cache on normalised intent plus filters rather than on the raw string, and invalidate on price and stock change. In retail support this is typically a large hit rate, because a long tail of phrasings maps onto a short list of intents.

@@ -58,11 +58,16 @@ TOOL_GROUPS: dict[str, tuple[str, ...]] = {
     "policy": ("lookup_policy",),
 }
 
-#: Group -> group. Selecting the key makes the value available too, because the
-#: conversation reliably moves that way: you browse, then you add to cart; you
-#: add to cart, then you check out.
+#: Group -> group. Selecting the key makes the value available too.
+#:
+#: "catalog implies cart" was here originally on the theory that browsing
+#: leads to buying, but it meant every browse-only message ("show me nike
+#: shoes") paid for four cart tools it had no use for - a real, constant tax
+#: on the single most common intent. Measured: ~370 tokens per turn, on every
+#: turn. Removed once the cart signal below was broadened to catch the actual
+#: purchase-intent phrasing directly ("add the cheapest one" now matches on
+#: its own), which was the one case the blanket rule existed to cover.
 GROUP_IMPLIES: dict[str, tuple[str, ...]] = {
-    "catalog": ("cart",),
     "cart": ("checkout", "catalog"),
     "checkout": ("cart",),
     "orders": ("policy",),
@@ -75,7 +80,14 @@ GROUP_SIGNALS: dict[str, re.Pattern[str]] = {
         r"shipment|delivered|delivery|arrive|arriving|dispatch|courier|cancel(?:led)?|"
         r"return(?:ing|ed)?|refund|where is|when will|my purchase|bought)\b", re.I),
     "cart": re.compile(
-        r"\b(?:cart|basket|bag|add (?:it|this|that|to)|remove|quantity|how many.*cart)\b", re.I),
+        # Bare "add" rather than an enumerated "add it/this/that/to" list:
+        # real phrasing varies too much to enumerate ("add the cheapest one",
+        # "please add 2 of these", "add a medium"), and in a shopping
+        # assistant "add" overwhelmingly means "add to cart" - there is
+        # nothing else in this app's vocabulary it plausibly means. \badd\b
+        # doesn't match inside "addition"/"address", so this isn't as loose
+        # as it looks.
+        r"\b(?:cart|basket|bag|add|remove|quantity|how many.*cart)\b", re.I),
     "checkout": re.compile(
         r"\b(?:check ?out|buy|purchase|order (?:it|this|these|them)|pay|payment|"
         r"place (?:the |my )?order|i'?ll take|confirm)\b", re.I),
