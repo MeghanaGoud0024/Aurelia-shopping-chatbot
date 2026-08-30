@@ -65,7 +65,7 @@
 
   const state = {
     busy: false, sessionId: null, dashboard: null, lastTurn: null, spendRange: 6,
-    modeChanging: false,
+    modeChanging: false, chatPinnedToBottom: true,
   };
 
   /* ------------------------------------------------------------- helpers */
@@ -849,6 +849,67 @@
     return wrap;
   }
 
+  /** A row of clickable, single-select chips (size or colour). Returns the
+   *  row plus a `get()` for whichever value is currently pressed - null if
+   *  the shopper hasn't picked one yet. Auto-selects when there is exactly
+   *  one option, since there is nothing to choose in that case, mirroring
+   *  how add_to_cart itself resolves an unambiguous single variant. */
+  function optionChips(label, options, autoSelectOnlyOption, onChange) {
+    const row = el("div", "mini__options");
+    let selected = autoSelectOnlyOption && options.length === 1 ? options[0] : null;
+    const buttons = options.map((value) => {
+      const button = el("button", "mini__opt", value);
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(value === selected));
+      button.setAttribute("aria-label", `${label}: ${value}`);
+      row.appendChild(button);
+      return button;
+    });
+    buttons.forEach((button, i) => {
+      button.addEventListener("click", () => {
+        selected = options[i];
+        buttons.forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
+        if (onChange) onChange(selected);
+      });
+    });
+    return { row, get: () => selected };
+  }
+
+  /** One-click answers to the assistant's own size/colour question.
+   *  Each chip carries a complete, correctly-phrased message in `data-prompt`,
+   *  which the delegated handler at the top of this file sends - so a click
+   *  goes through the identical tool call, guardrail and audit path as typing
+   *  it, and arrives in the exact form the planner parses. The row disables
+   *  itself once used, mirroring the feedback buttons, so a stale question
+   *  further up the transcript can't be answered twice. */
+  function clarificationChips(clarification) {
+    const { field, options, product_name: productName } = clarification;
+    if (!options?.length || !productName) return null;
+
+    const row = el("div", "choices");
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", clarification.question || "Choose an option");
+
+    for (const value of options) {
+      const size = field === "size" ? value : clarification.size;
+      const color = field === "color" ? value : clarification.color;
+      let message = `Add "${productName}" to my bag`;
+      if (size) message += ` in size ${size}`;
+      if (color) message += `${size ? " and" : " in"} colour ${color}`;
+
+      const chip = el("button", "choices__chip", value);
+      chip.type = "button";
+      chip.dataset.prompt = message;
+      chip.setAttribute("aria-label", `${field === "size" ? "Size" : "Colour"}: ${value}`);
+      chip.addEventListener("click", () => {
+        row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+        chip.setAttribute("aria-pressed", "true");
+      });
+      row.appendChild(chip);
+    }
+    return row;
+  }
+
   function productMini(product) {
     const card = el("article", "mini");
     card.appendChild(productArtwork(product));
@@ -874,44 +935,90 @@
     );
     card.appendChild(priceRow);
 
-    // Add-to-bag button, right after the price row. It sends a normal chat
-    // message rather than calling a cart endpoint directly, so a click goes
-    // through the exact same tool call, guardrail and audit path as typing
-    // "add it to my bag" - including the assistant asking for a size or
-    // colour when the product has more than one in stock, which a direct API
-    // call would have to reimplement rather than reuse.
-    if (product.in_stock) {
-      const addButton = el("button", "mini__add", "Add to bag");
-      addButton.type = "button";
-      addButton.setAttribute("aria-label", `Add ${product.name} to your bag`);
-      addButton.addEventListener("click", async () => {
-        addButton.disabled = true;
-        addButton.textContent = "Adding...";
-        try {
-          await send(`Add "${product.name}" to my bag`);
-        } finally {
-          // Always restore the button. The turn may legitimately end with a
-          // question rather than an add ("which colour?"), in which case the
-          // customer answers in the composer and this card stays on screen -
-          // leaving it stuck on a disabled "Adding..." would read as broken.
-          addButton.disabled = false;
-          addButton.textContent = "Add to bag";
-        }
-      });
-      card.appendChild(addButton);
-    }
-
     const rating = el("div", "mini__meta");
     rating.appendChild(el("span", "stars", stars(product.rating)));
     rating.appendChild(document.createTextNode(` ${product.rating} (${product.review_count.toLocaleString()})`));
     card.appendChild(rating);
 
+    // Size/colour are picked here, before adding, rather than shown as
+    // plain text the shopper had to answer a follow-up question about. A
+    // pick made here rides along in the Add to bag message below.
+    let sizePicker = null;
+    let colorPicker = null;
+    const gate = () => updateAddState();
     if (product.available_sizes?.length) {
-      card.appendChild(el("div", "mini__meta", `Sizes ${product.available_sizes.join(", ")}`));
+      card.appendChild(el("div", "mini__meta", "Size"));
+      sizePicker = optionChips("Size", product.available_sizes, true, gate);
+      card.appendChild(sizePicker.row);
     }
     if (product.available_colors?.length) {
-      card.appendChild(el("div", "mini__meta", `Colours ${product.available_colors.join(", ")}`));
+      card.appendChild(el("div", "mini__meta", "Colour"));
+      colorPicker = optionChips("Colour", product.available_colors, true, gate);
+      card.appendChild(colorPicker.row);
     }
+
+    // Add-to-bag button. It sends a normal chat message rather than calling
+    // a cart endpoint directly, so a click goes through the exact same tool
+    // call, guardrail and audit path as typing "add it to my bag".
+    //
+    // The button stays disabled until every dimension the product actually
+    // varies on has been chosen. Sending an incomplete add was the single
+    // biggest source of failed turns - it came back as "which colour?", the
+    // shopper had to answer in prose, and a small model routinely lost the
+    // thread from there. A product with one size and one colour auto-selects
+    // both, so it stays instantly addable.
+    let hintId = null;
+    function updateAddState() {}  // replaced below once the button exists
+    if (product.in_stock) {
+      const needsChoice = () =>
+        (sizePicker && !sizePicker.get()) || (colorPicker && !colorPicker.get());
+
+      const addButton = el("button", "mini__add", "Add to bag");
+      addButton.type = "button";
+      addButton.setAttribute("aria-label", `Add ${product.name} to your bag`);
+
+      let hint = null;
+      if (needsChoice()) {
+        const missing = [
+          sizePicker && !sizePicker.get() ? "size" : null,
+          colorPicker && !colorPicker.get() ? "colour" : null,
+        ].filter(Boolean);
+        hintId = `pick-${product.product_id}-${Math.random().toString(36).slice(2, 7)}`;
+        hint = el("div", "mini__hint", `Pick a ${missing.join(" and ")} first`);
+        hint.id = hintId;
+        addButton.disabled = true;
+        addButton.setAttribute("aria-describedby", hintId);
+      }
+
+      updateAddState = () => {
+        const blocked = needsChoice();
+        addButton.disabled = blocked;
+        if (hint) hint.hidden = !blocked;
+      };
+
+      addButton.addEventListener("click", async () => {
+        addButton.disabled = true;
+        addButton.textContent = "Adding...";
+        try {
+          const size = sizePicker?.get();
+          const color = colorPicker?.get();
+          let message = `Add "${product.name}" to my bag`;
+          if (size) message += ` in size ${size}`;
+          if (color) message += `${size ? " and" : " in"} colour ${color}`;
+          await send(message);
+        } finally {
+          // Always restore the button. The turn can still legitimately end
+          // with a question rather than an add, in which case this card stays
+          // on screen - leaving it stuck on a disabled "Adding..." would read
+          // as broken.
+          addButton.textContent = "Add to bag";
+          updateAddState();
+        }
+      });
+      card.appendChild(addButton);
+      if (hint) card.appendChild(hint);
+    }
+
     return card;
   }
 
@@ -1003,14 +1110,14 @@
     const node = document.getElementById("tpl-message-user").content.cloneNode(true);
     node.querySelector(".msg__bubble").textContent = text;
     dom.transcript.appendChild(node);
-    scrollChat();
+    scrollChat({ force: true });
   }
 
   function addTyping() {
     const node = document.getElementById("tpl-typing").content.cloneNode(true);
     const article = node.querySelector(".msg");
     dom.transcript.appendChild(node);
-    scrollChat();
+    scrollChat({ force: true });
     const notes = ["Checking our systems", "Looking that up", "Reading the results"];
     let index = 0;
     const noteNode = article.querySelector(".dots__note");
@@ -1034,12 +1141,25 @@
     if (payload.blocked) article.classList.add("msg--blocked");
     if (!payload.grounded) article.classList.add("msg--ungrounded");
 
+    // One-click answers to a size/colour question, directly under the reply
+    // and above any cards, so the shopper never has to retype an option.
+    if (payload.clarification) {
+      const choices = clarificationChips(payload.clarification);
+      if (choices) cards.appendChild(choices);
+    }
+
     if (payload.products?.length) {
       const grid = el("div", "mini-grid");
       payload.products.forEach((p) => grid.appendChild(productMini(p)));
       cards.appendChild(grid);
     }
-    payload.orders?.forEach((o) => cards.appendChild(orderCard(o)));
+    // get_order_status/cancel_order/request_return carry the full detail
+    // shape (timeline present); list_my_orders carries lightweight summary
+    // rows for up to 20 orders, rendered the same compact way the Orders tab
+    // already does, expanding to the full card on demand.
+    payload.orders?.forEach((o) =>
+      cards.appendChild(o.timeline !== undefined ? orderCard(o) : orderSummaryCard(o))
+    );
     if (payload.checkout_quote) cards.appendChild(quoteCard(payload.checkout_quote));
 
     if (payload.citations?.length) {
@@ -1091,9 +1211,25 @@
     });
   }
 
-  const scrollChat = () => requestAnimationFrame(() => {
-    dom.transcript.scrollTop = dom.transcript.scrollHeight;
-  });
+  // Follow new replies only while the shopper is already at the latest turn.
+  // If they scroll up while a reply is loading, leave their reading position
+  // alone instead of forcing the transcript back down.
+  const isChatNearBottom = () => (
+    dom.transcript.scrollHeight - dom.transcript.scrollTop - dom.transcript.clientHeight < 28
+  );
+
+  const scrollChat = ({ force = false } = {}) => {
+    if (!force && !state.chatPinnedToBottom) return;
+    requestAnimationFrame(() => {
+      if (!force && !state.chatPinnedToBottom) return;
+      dom.transcript.scrollTop = dom.transcript.scrollHeight;
+      state.chatPinnedToBottom = true;
+    });
+  };
+
+  dom.transcript.addEventListener("scroll", () => {
+    state.chatPinnedToBottom = isChatNearBottom();
+  }, { passive: true });
 
   /* ---------------------------------------------------------------- send */
 
@@ -1183,7 +1319,8 @@
    *  the offline planner is a legitimate choice, not an error condition. */
   function quotaChipState(status) {
     if (status.effective_mode === "fallback") {
-      const reason = status.forced_fallback ? "Offline (manual)" : "Offline (no key)";
+      const reason = status.forced_fallback ? "Offline (manual)"
+        : status.quota_cooldown_active ? "Offline (quota cooldown)" : "Offline (no key)";
       return { tone: "neutral", label: reason };
     }
     const daily = status.quota.daily;
