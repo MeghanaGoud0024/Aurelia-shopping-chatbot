@@ -99,8 +99,7 @@ class Plan:
         if not isinstance(result, dict):
             return ""
         if result.get("code"):
-            hint = result.get("recovery_hint", "")
-            return f"{result.get('error', 'That did not work.')}" + (f" {hint}" if hint else "")
+            return self._render_error(result)
 
         if tool_name == "search_products":
             return self._render_products(result)
@@ -126,6 +125,26 @@ class Plan:
         if "message" in result:
             return str(result["message"])
         return ""
+
+    @staticmethod
+    def _render_error(result: dict[str, Any]) -> str:
+        """Turn a tool error into something addressed to the customer.
+
+        `recovery_hint` is written for the model - "Ask the customer which
+        colour they want, then call add_to_cart again" - and must never be
+        shown verbatim to a shopper: it leaks internal tool names and reads as
+        an instruction aimed at someone else. For the ambiguity errors, which
+        are a *question* rather than a failure, the structured `options` are
+        rephrased directly. Everything else falls back to the plain error
+        sentence, which is already customer-facing.
+        """
+        code = result.get("code")
+        options = result.get("options") or []
+        if code in {"NEEDS_COLOR", "NEEDS_SIZE"} and options:
+            noun = "colour" if code == "NEEDS_COLOR" else "size"
+            choices = ", ".join(options[:-1]) + f" or {options[-1]}" if len(options) > 1 else options[0]
+            return f"Which {noun} would you like? Available: {choices}."
+        return str(result.get("error", "That did not work."))
 
     @staticmethod
     def _render_products(result: dict[str, Any]) -> str:
@@ -282,6 +301,72 @@ def _detect_policy_topic(text: str) -> str | None:
         if score > best_score:
             best_topic, best_score = topic, score
     return best_topic
+
+
+#: Words that are a bare answer to a clarifying question rather than a new
+#: request. Kept deliberately small - anything longer or more sentence-like is
+#: treated as a fresh intent, so a genuine new question is never swallowed as
+#: an answer to a stale prompt.
+_BARE_ANSWER_MAX_WORDS = 4
+
+
+def plan_with_pending(message: str, pending: dict[str, Any] | None) -> Plan:
+    """Plan a turn, resolving a bare reply to a previous clarifying question.
+
+    The rule-based planner is otherwise stateless: every message is classified
+    on its own. That breaks the one multi-turn exchange it *does* initiate
+    itself - `add_to_cart` returning NEEDS_SIZE or NEEDS_COLOR asks the
+    customer to pick, and their one-word answer ("black") then matches no
+    intent at all and falls through to the help text, silently dropping the
+    add. The LLM path never had this problem because it replays conversation
+    history; this gives the deterministic path just enough memory to close the
+    same loop.
+
+    `pending` carries the unfinished add_to_cart: the product name plus
+    whichever of size/colour is still missing and what the valid options are.
+    Only a short, option-matching reply is treated as an answer - anything
+    else is planned normally, so the pending state can never hijack a real
+    question.
+    """
+    if pending:
+        resolved = _resolve_pending_answer(message, pending)
+        if resolved is not None:
+            return resolved
+    return plan_without_llm(message)
+
+
+def _resolve_pending_answer(message: str, pending: dict[str, Any]) -> Plan | None:
+    """Interpret `message` as an answer to a pending size/colour question.
+
+    Returns None when it clearly isn't one, so the caller falls back to normal
+    intent classification.
+    """
+    text = message.strip().strip(".!?").strip()
+    if not text or len(text.split()) > _BARE_ANSWER_MAX_WORDS:
+        return None
+
+    field = pending.get("field")          # "color" or "size"
+    options = pending.get("options") or []
+    product_name = pending.get("product_name")
+    if not field or not options or not product_name:
+        return None
+
+    lowered = text.lower()
+    match = next((opt for opt in options if opt.lower() == lowered), None)
+    if match is None:
+        # Allow "the navy one", "navy please", "size M" and similar padding
+        # around the option itself, but still require the option to be present.
+        match = next((opt for opt in options if opt.lower() in lowered), None)
+    if match is None:
+        return None
+
+    args: dict[str, Any] = {"product_name": product_name, field: match}
+    # Carry forward whatever was already known, so answering the second
+    # question does not discard the answer to the first.
+    for carried in ("size", "color"):
+        if carried != field and pending.get(carried):
+            args[carried] = pending[carried]
+    return Plan("add_to_cart", [("add_to_cart", args)])
 
 
 def plan_without_llm(message: str) -> Plan:

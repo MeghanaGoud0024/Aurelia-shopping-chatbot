@@ -39,6 +39,7 @@ from app.db.models import (
     PaymentMethod, ProductVariant,
 )
 from app.schemas import CartLine, CartView, CheckoutQuote, Money, ToolError
+from app.services.catalog import _size_rank
 
 logger = logging.getLogger(__name__)
 
@@ -259,12 +260,16 @@ def add_to_cart(
                 error=f"Colour is ambiguous. Available: {', '.join(sorted(distinct_colors))}.",
                 code="NEEDS_COLOR",
                 recovery_hint="Ask the customer which colour they want, then call add_to_cart again.",
+                needs_field="color",
+                options=sorted(distinct_colors),
             )
         if len(distinct_sizes) > 1 and not size:
             return ToolError(
                 error=f"Size is ambiguous. Available: {', '.join(sorted(distinct_sizes))}.",
                 code="NEEDS_SIZE",
                 recovery_hint="Ask the customer which size they want, then call add_to_cart again.",
+                needs_field="size",
+                options=sorted(distinct_sizes, key=_size_rank),
             )
         variant = in_stock[0]
     else:

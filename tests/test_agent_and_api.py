@@ -297,3 +297,106 @@ def test_correlation_id_is_returned(client):
 def test_correlation_id_is_echoed_when_supplied(client):
     response = client.get("/api/ops/health", headers={"X-Correlation-Id": "trace-me-123"})
     assert response.headers["X-Correlation-Id"] == "trace-me-123"
+
+
+# --------------------------------- clarification follow-up (fallback planner)
+
+def test_bare_answer_resolves_a_pending_colour_question():
+    """The bug this covers: the rule-based planner asks "which colour?" via
+    NEEDS_COLOR, the customer replies "black", and that one word previously
+    matched no intent and fell through to the help text - silently dropping
+    the add the customer had already asked for."""
+    from app.agent.fallback import plan_with_pending
+
+    pending = {
+        "product_name": "Adidas Club Men's Jeans",
+        "field": "color", "options": ["Black", "Navy"],
+        "size": None, "color": None,
+    }
+    plan = plan_with_pending("black", pending)
+    assert plan.intent == "add_to_cart"
+    name, args = plan.calls[0]
+    assert name == "add_to_cart"
+    assert args["product_name"] == "Adidas Club Men's Jeans"
+    assert args["color"] == "Black"
+
+
+def test_pending_answer_accepts_light_padding_around_the_option():
+    from app.agent.fallback import plan_with_pending
+
+    pending = {"product_name": "X", "field": "color", "options": ["Navy"], "size": None, "color": None}
+    assert plan_with_pending("navy please", pending).intent == "add_to_cart"
+
+
+def test_pending_answer_carries_forward_the_already_known_dimension():
+    """Answering the second question must not discard the answer to the first."""
+    from app.agent.fallback import plan_with_pending
+
+    pending = {
+        "product_name": "X", "field": "size", "options": ["M", "L"],
+        "size": None, "color": "Black",
+    }
+    _name, args = plan_with_pending("M", pending).calls[0]
+    assert args["size"] == "M"
+    assert args["color"] == "Black"
+
+
+@pytest.mark.parametrize("message", [
+    "What is the status of my order 1234?",   # a real question, not an answer
+    "show me nike t-shirts",                  # a new search
+    "purple",                                 # not one of the offered options
+    "I was thinking maybe the black one but actually show me hoodies instead",  # too long
+])
+def test_pending_state_never_hijacks_a_genuine_message(message):
+    """Pending state must only absorb a short, option-matching reply. Anything
+    else has to be planned normally, or a stale question could swallow the
+    customer's next real request."""
+    from app.agent.fallback import plan_with_pending
+
+    pending = {
+        "product_name": "X", "field": "color", "options": ["Black", "Navy"],
+        "size": None, "color": None,
+    }
+    assert plan_with_pending(message, pending).intent != "add_to_cart"
+
+
+def test_plan_with_pending_matches_plain_planning_when_nothing_is_pending():
+    from app.agent.fallback import plan_with_pending, plan_without_llm
+
+    for message in ["show me nike t-shirts", "black", "where is order 1234"]:
+        assert plan_with_pending(message, None).intent == plan_without_llm(message).intent
+
+
+def test_ambiguity_errors_carry_structured_options(session, catalogue):
+    """The planner resolves an answer against `options`, so the error has to
+    expose them as data - not only inside an English sentence."""
+    from app.services import cart as cart_service
+
+    result = cart_service.add_to_cart(
+        session, "clarify-session", product_id=catalogue["nike_tee"].id, size="M"
+    )
+    assert result.code == "NEEDS_COLOR"
+    assert result.needs_field == "color"
+    assert set(result.options) == {"Black", "Navy"}
+
+
+def test_clarifying_question_is_addressed_to_the_customer():
+    """`recovery_hint` is written for the model ("...then call add_to_cart
+    again") and must never reach a shopper verbatim - it leaks internal tool
+    names and reads as an instruction meant for someone else."""
+    from app.agent.fallback import Plan
+
+    plan = Plan("add_to_cart", [])
+    plan.observe("add_to_cart", {
+        "code": "NEEDS_COLOR",
+        "error": "Colour is ambiguous. Available: Navy, Sand.",
+        "recovery_hint": "Ask the customer which colour they want, then call add_to_cart again.",
+        "needs_field": "color",
+        "options": ["Navy", "Sand"],
+    })
+    reply = plan.render()
+
+    assert "add_to_cart" not in reply
+    assert "Ask the customer" not in reply
+    assert "Navy" in reply and "Sand" in reply
+    assert reply.lower().startswith("which colour")

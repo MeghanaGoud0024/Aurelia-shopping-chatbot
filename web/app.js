@@ -884,10 +884,19 @@
       const addButton = el("button", "mini__add", "Add to bag");
       addButton.type = "button";
       addButton.setAttribute("aria-label", `Add ${product.name} to your bag`);
-      addButton.addEventListener("click", () => {
+      addButton.addEventListener("click", async () => {
         addButton.disabled = true;
         addButton.textContent = "Adding...";
-        send(`Add "${product.name}" to my bag`);
+        try {
+          await send(`Add "${product.name}" to my bag`);
+        } finally {
+          // Always restore the button. The turn may legitimately end with a
+          // question rather than an add ("which colour?"), in which case the
+          // customer answers in the composer and this card stays on screen -
+          // leaving it stuck on a disabled "Adding..." would read as broken.
+          addButton.disabled = false;
+          addButton.textContent = "Add to bag";
+        }
       });
       card.appendChild(addButton);
     }

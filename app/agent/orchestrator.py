@@ -34,7 +34,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.agent.fallback import plan_without_llm
+from app.agent.fallback import plan_with_pending
 from app.agent.llm import LLMError, LLMResponse, llm_client
 from app.agent.mode import assistant_mode
 from app.agent.prompts import build_system_prompt
@@ -127,6 +127,13 @@ class Orchestrator:
 
     def __init__(self) -> None:
         self._history: dict[str, list[dict[str, Any]]] = {}
+        #: Unfinished add_to_cart clarifications, per session. Only the
+        #: rule-based planner uses this: the LLM path replays conversation
+        #: history and resolves "black" against it on its own, whereas the
+        #: deterministic planner classifies each message in isolation and
+        #: would otherwise drop the answer to its own question. Cleared as
+        #: soon as it is used or superseded, so it can never go stale.
+        self._pending_clarification: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     # -- conversation memory ---------------------------------------------
@@ -146,6 +153,10 @@ class Orchestrator:
     async def reset(self, session_id: str) -> None:
         async with self._lock:
             self._history.pop(session_id, None)
+            # A pending clarification belongs to the conversation being
+            # cleared; leaving it would let the first message of a fresh
+            # conversation be read as an answer to a question nobody can see.
+            self._pending_clarification.pop(session_id, None)
 
     # -- the turn ---------------------------------------------------------
 
@@ -487,10 +498,15 @@ class Orchestrator:
         demonstrable, and reviewable, with no credentials at all. Only the
         language quality differs.
         """
-        plan = plan_without_llm(message)
+        pending = self._pending_clarification.pop(context.session_id, None)
+        plan = plan_with_pending(message, pending)
         add_step(
             kind="reasoning", label="Rule-based planning",
-            detail=f"matched intent '{plan.intent}'", status="ok",
+            detail=(
+                f"matched intent '{plan.intent}'"
+                + (" (answering a pending question)" if pending and plan.intent == "add_to_cart" else "")
+            ),
+            status="ok",
         )
         for call_name, arguments in plan.calls:
             result, status, latency_ms = self._execute(
@@ -504,7 +520,39 @@ class Orchestrator:
                 status=status, latency_ms=latency_ms,
             )
             plan.observe(call_name, result)
+            self._remember_clarification(context.session_id, call_name, arguments, result)
         return plan.render(), "stop"
+
+    def _remember_clarification(
+        self, session_id: str, call_name: str, arguments: dict[str, Any], result: Any
+    ) -> None:
+        """Record an unanswered size/colour question so the next turn can
+        resolve a bare reply against it.
+
+        Only NEEDS_SIZE/NEEDS_COLOR qualify: they are the one case where the
+        planner asks the customer something and needs their answer to finish
+        an action it has already started. Anything else leaves no pending
+        state, so an ordinary error can't cause the next unrelated message to
+        be misread as an answer.
+        """
+        if call_name != "add_to_cart" or not isinstance(result, dict):
+            return
+        if result.get("code") not in {"NEEDS_SIZE", "NEEDS_COLOR"}:
+            return
+        needs_field = result.get("needs_field")
+        options = result.get("options") or []
+        product_name = arguments.get("product_name")
+        if not (needs_field and options and product_name):
+            return
+        self._pending_clarification[session_id] = {
+            "product_name": product_name,
+            "field": needs_field,
+            "options": options,
+            # Preserve an already-supplied dimension so answering the second
+            # question doesn't lose the answer to the first.
+            "size": arguments.get("size"),
+            "color": arguments.get("color"),
+        }
 
 
 def _plural(count: int, singular: str, plural_form: str | None = None) -> str:

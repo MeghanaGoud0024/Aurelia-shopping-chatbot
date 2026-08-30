@@ -237,3 +237,75 @@ def test_health_reports_forced_fallback_state(client):
     assert client.get("/api/ops/health").json()["forced_fallback"] is True
     client.post("/api/ops/llm-mode", json={"forced_fallback": False})
     assert client.get("/api/ops/health").json()["forced_fallback"] is False
+
+
+# ------------------------------- clarification follow-up, end to end over HTTP
+
+def _answer_options(reply: str) -> list[str]:
+    """Pull the offered choices out of an "Available: A, B or C." reply."""
+    import re
+
+    match = re.search(r"Available:\s*([^.]+)\.", reply)
+    if not match:
+        return []
+    return [opt.strip() for opt in re.split(r",| or ", match.group(1)) if opt.strip()]
+
+
+def test_offline_add_to_cart_completes_through_clarification(client):
+    """The exact flow reported broken: in offline mode, add a product that is
+    ambiguous, answer each question with one word, and the item must actually
+    land in the bag. Previously every answer matched no intent, ran no tools,
+    and returned the generic help text - silently dropping the add.
+
+    The options are read from the assistant's own reply rather than hardcoded,
+    so this tests the real conversational loop instead of assuming which
+    colours the generated catalogue happens to contain.
+    """
+    client.post("/api/ops/llm-mode", json={"forced_fallback": True})
+    client.post("/api/chat/reset")
+
+    reply = client.post(
+        "/api/chat", json={"message": 'Add "Nike Core Unisex T-Shirt" to my bag'}
+    ).json()["reply"]
+    assert _answer_options(reply), f"expected a clarifying question, got: {reply}"
+
+    # The product may be ambiguous on both colour and size; answer whatever it
+    # asks until it stops asking. Bounded so a regression loops finitely.
+    added = False
+    for _ in range(4):
+        options = _answer_options(reply)
+        assert options, f"expected a list of choices, got: {reply}"
+
+        turn = client.post("/api/chat", json={"message": options[0]}).json()
+        tools = [s["tool_name"] for s in turn["trace"] if s["kind"] == "tool_call"]
+        assert "add_to_cart" in tools, "each answer must trigger a real add_to_cart call"
+
+        reply = turn["reply"]
+        if not _answer_options(reply):
+            added = True
+            break
+
+    assert added, f"clarification never resolved; last reply: {reply}"
+
+    cart = client.get("/api/cart").json()
+    assert cart["item_count"] >= 1
+    assert any("Nike Core Unisex" in line["product_name"] for line in cart["lines"])
+
+    # Leave no state behind for other tests in the module.
+    for line in cart["lines"]:
+        client.delete(f"/api/cart/{line['variant_id']}")
+
+
+def test_reset_clears_a_pending_clarification(client):
+    """A pending question belongs to the conversation being cleared - after a
+    reset, a bare word must be planned as a fresh message, not as an answer."""
+    client.post("/api/ops/llm-mode", json={"forced_fallback": True})
+    client.post("/api/chat/reset")
+
+    client.post("/api/chat", json={"message": 'Add "Nike Core Unisex T-Shirt" to my bag'})
+    client.post("/api/chat/reset")
+
+    after = client.post("/api/chat", json={"message": "Navy"}).json()
+    tools = [s["tool_name"] for s in after["trace"] if s["kind"] == "tool_call"]
+    assert "add_to_cart" not in tools
+    assert client.get("/api/cart").json()["item_count"] == 0

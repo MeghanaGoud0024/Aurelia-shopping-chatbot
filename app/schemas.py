@@ -202,6 +202,14 @@ class ToolError(BaseModel):
     code: str
     recovery_hint: str = ""
     retryable: bool = False
+    #: Machine-readable detail for errors that represent a *question* rather
+    #: than a failure - NEEDS_SIZE and NEEDS_COLOR carry the field still
+    #: needed and the valid values for it. The prose in `error` says the same
+    #: thing, but a caller that wants to act on it (the rule-based planner
+    #: closing its own clarification loop) should not have to parse English
+    #: out of a sentence that exists to be read by a human.
+    needs_field: str | None = None
+    options: list[str] = Field(default_factory=list)
 
 
 class TraceStep(BaseModel):
