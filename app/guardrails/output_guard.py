@@ -115,15 +115,23 @@ UNGROUNDED_REPLACEMENT: dict[str, str] = {
 #: Shown when the reply contradicted a confirmed-available tool result. Written
 #: to recover the conversation rather than merely refuse: the product *is*
 #: buyable, so the useful next step is to ask which variant.
-#: "I've added it to your bag", "it's in your cart now", "I have put it in".
-#: Past/present-tense assertions that a change already happened - deliberately
-#: not matching offers or questions ("shall I add it?", "would you like me to
-#: add"), which claim nothing.
+#: "I've added it to your bag", "it's in your cart now", "I have put it in",
+#: "your cart now contains X". Past/present-tense assertions that a change
+#: already happened, or a declarative statement of the cart's current
+#: contents - deliberately not matching offers or questions ("shall I add
+#: it?", "would you like me to add", "what's in my cart?"), which claim
+#: nothing. The "cart/bag now contains" branch was added after a live
+#: llama3.2:3b reply - "I'll add it to your bag. Your shopping cart now
+#: contains: 1 x ... (Navy)." - slipped past every other branch: "I'll add"
+#: is future tense (no claim yet) and "now contains" doesn't use "added" or
+#: "is/are ... in", the two verbs the original patterns covered.
 _CART_MUTATION_CLAIM = re.compile(
     r"\b(?:I(?:'ve| have)?\s+added"
     r"|(?:has|have)\s+been\s+added"
     r"|added\s+(?:it|that|this|the)\b[^.!?]{0,40}\bto\s+your\s+(?:bag|cart|basket)"
     r"|(?:is|are)\s+now\s+in\s+your\s+(?:bag|cart|basket)"
+    r"|(?:cart|bag|basket)\s+(?:now\s+)?(?:contains?|has|includes?|shows?)\b"
+    r"|I(?:'ve| have)\s+put\b[^.!?]{0,40}\bin\s+your\s+(?:bag|cart|basket)"
     r"|I(?:'ve| have)?\s+removed)\b",
     re.I,
 )

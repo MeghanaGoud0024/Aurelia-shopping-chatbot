@@ -400,3 +400,37 @@ def test_artifacts_only_flag_cart_mutation_on_success():
     ok = TurnArtifacts()
     ok.note_availability("add_to_cart", {"item_count": 1, "lines": []})
     assert ok.cart_mutated is True
+
+
+@pytest.mark.parametrize("reply", [
+    # Verbatim (product name shortened) from a live llama3.2:3b session: "I'll
+    # add" is future tense and never matched, and "now contains" uses neither
+    # "added" nor "is/are ... in", the two verbs the original patterns covered.
+    "I'll add it to your bag. Your shopping cart now contains: 1 x Adidas "
+    "Club Unisex T-Shirt (Navy). The total cost of this item is $20.99.",
+    "Your cart now has 1 item in it.",
+    "Your bag now includes the Navy tee.",
+    "I have put it in your cart for you.",
+])
+def test_declarative_cart_contents_claim_is_blocked(reply):
+    """A declarative statement of the cart's current contents is just as much
+    a claim as "I've added it" - it must be blocked the same way when no
+    mutation actually happened this turn."""
+    decision = screen_output(reply, tools_called={"search_products"}, cart_mutated=False)
+    assert decision.grounded is False
+    assert decision.rule == "unbacked_cart_claim"
+
+
+@pytest.mark.parametrize("reply", [
+    "What does your cart currently contain?",
+    "I have put together a few options for you.",
+    "I can put it in your cart once you confirm the size.",
+    "Your cart currently has 0 items - want me to add something?",
+    "If you confirm the size, I will put it straight in your cart.",
+])
+def test_cart_contents_phrasing_without_a_claim_is_not_blocked(reply):
+    """The widened pattern must stay narrow: a question about the cart, an
+    unrelated use of "put together", or a conditional future action must not
+    be mistaken for a completed mutation."""
+    decision = screen_output(reply, tools_called={"search_products"}, cart_mutated=False)
+    assert decision.rule == "clean"
