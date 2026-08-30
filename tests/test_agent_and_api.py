@@ -230,6 +230,22 @@ def test_fallback_routes_browse_categories_to_product_search(message, category):
     assert args["category"] == category
 
 
+@pytest.mark.parametrize("message,category", [
+    ("I want shoes", "Footwear"),
+    ("I need shirts", "Topwear"),
+    ("find me trousers", "Bottomwear"),
+    ("show me coats", "Outerwear"),
+    ("I want an accessory", "Accessories"),
+])
+def test_fallback_understands_natural_broad_product_requests(message, category):
+    """Short shopping phrases must search instead of returning generic help."""
+    plan = plan_without_llm(message)
+    assert plan.intent == "product_search"
+    name, args = plan.calls[0]
+    assert name == "search_products"
+    assert args["category"] == category
+
+
 def test_womens_query_is_not_misread_as_mens():
     """'women's' contains 'men's'; a naive substring check gets this wrong."""
     _name, args = plan_without_llm("women's hoodies on sale").calls[0]

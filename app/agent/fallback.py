@@ -54,6 +54,13 @@ BRANDS = [
     "Columbia", "Ray-Ban", "Fossil",
 ]
 CATEGORIES = ["Topwear", "Bottomwear", "Footwear", "Outerwear", "Accessories"]
+CATEGORY_ALIASES = {
+    "Topwear": ["shirts", "shirt", "tops"],
+    "Bottomwear": ["trousers", "pants", "bottoms"],
+    "Footwear": ["shoes", "shoe"],
+    "Outerwear": ["coats", "coat"],
+    "Accessories": ["accessory", "accessories"],
+}
 SUBCATEGORIES = [
     "T-Shirt", "Polo Shirt", "Hoodie", "Sweatshirt", "Casual Shirt", "Tank Top",
     "Jeans", "Chinos", "Joggers", "Shorts", "Track Pants", "Running Shoes",
@@ -291,9 +298,13 @@ def _detect_brand(text: str) -> str | None:
 
 
 def _detect_category(text: str) -> str | None:
-    """Return a catalogue category selected from the browse-strip controls."""
+    """Return a catalogue category from controls or ordinary shopping words."""
     lowered = text.lower()
-    return next((category for category in CATEGORIES if category.lower() in lowered), None)
+    for category in CATEGORIES:
+        terms = [category.lower(), *CATEGORY_ALIASES.get(category, [])]
+        if any(re.search(rf"\b{re.escape(term)}\b", lowered) for term in terms):
+            return category
+    return None
 
 
 def _detect_policy_topic(text: str) -> str | None:
@@ -499,7 +510,7 @@ def plan_without_llm(message: str) -> Plan:
     # Anything not consumed by a structured slot becomes the relevance query.
     arguments["query"] = text
 
-    if len(arguments) <= 2 and not brand and not subcategory:
+    if len(arguments) <= 2 and not brand and not category and not subcategory:
         # Nothing recognisable to search on.
         greeting = any(w in lowered for w in ("hi", "hello", "hey", "help", "what can you"))
         if greeting or len(lowered.split()) <= 3:

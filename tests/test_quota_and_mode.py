@@ -220,6 +220,17 @@ def test_forced_fallback_actually_routes_the_turn(client):
     assert any(step["kind"] == "tool_call" for step in body["trace"])
 
 
+def test_forced_fallback_natural_shoe_request_returns_product_cards(client):
+    """A normal short request such as 'I want shoes' must not become help."""
+    client.post("/api/ops/llm-mode", json={"forced_fallback": True})
+    body = client.post("/api/chat", json={"message": "I want shoes"}).json()
+
+    calls = [step["tool_name"] for step in body["trace"] if step["kind"] == "tool_call"]
+    assert "search_products" in calls
+    assert body["products"]
+    assert all(product["category"] == "Footwear" for product in body["products"])
+
+
 def test_llm_mode_label_distinguishes_manual_from_no_key(client, monkeypatch):
     """With a key present, forcing fallback must say so explicitly rather
     than reading identically to 'no key configured' - an operator glancing
