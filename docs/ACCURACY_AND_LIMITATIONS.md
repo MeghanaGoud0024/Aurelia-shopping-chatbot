@@ -113,7 +113,7 @@ All three have the same fix - Redis behind the same interface - covered in [SCAL
 ### Model dependency
 
 - **Tool-calling quality varies by model.** Developed against `gpt-oss-120b`. A weaker model will select tools less reliably. The grounding check limits the damage but does not eliminate it.
-- **Free-tier rate limits shape the design.** 8,000 tokens per minute drove tool routing and prompt trimming. Both are net improvements, but the constraint is why they exist.
+- **Free-tier rate limits shape the design, at two different scales.** An 8,000 tokens-per-minute ceiling drove tool routing and prompt trimming. A separate 200,000 tokens-*per-day* ceiling is harsher and cannot be engineered around the same way, since it caps total volume rather than per-call size. The application surfaces this rather than hiding it: a quota chip in the chat header shows live per-minute windows plus the daily figure as of the last time the provider actually stated it (Groq does not expose remaining-today on ordinary responses, only in a 429's text once the ceiling is hit - see `app/agent/llm.py`'s `QuotaTracker`), and a Live/Offline switch lets the deterministic fallback planner take over on demand rather than waiting out the reset.
 - **No streaming.** Replies arrive complete. At ~1.3 seconds this is acceptable; at 5+ seconds it would not be.
 
 ---

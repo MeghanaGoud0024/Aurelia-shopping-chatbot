@@ -21,8 +21,10 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -145,6 +147,162 @@ def _parse_duration(value: str) -> float | None:
     return seconds
 
 
+#: Pulled out of a 429 error body when the provider states a daily figure the
+#: success-path headers never carry, e.g. "... on tokens per day (TPD): Limit
+#: 200000, Used 199074, Requested 3363. Please try again in 17m32.78s.".
+_DAILY_LIMIT_RE = re.compile(
+    r"tokens per day \(TPD\)[:\s]*Limit\s+(?P<limit>\d+),\s*Used\s+(?P<used>\d+)", re.I
+)
+_TRY_AGAIN_RE = re.compile(r"try again in\s+([0-9hms.]+)", re.I)
+
+
+@dataclass(slots=True, frozen=True)
+class WindowSnapshot:
+    """One rate-limit window (e.g. per-minute requests, or tokens) as last
+    reported by the provider, plus when we observed it."""
+
+    limit: int
+    remaining: int
+    reset_in_seconds: float
+    observed_at: str  # ISO 8601, UTC
+
+
+@dataclass(slots=True, frozen=True)
+class DailySnapshot:
+    """The daily token ceiling, known only when a 429 has stated it - Groq
+    does not expose a remaining-today figure on ordinary success responses,
+    so this is a fact learned the hard way and cached rather than polled."""
+
+    limit: int
+    used: int
+    reset_in_seconds: float | None
+    observed_at: str
+
+
+class QuotaTracker:
+    """Tracks what is actually knowable about provider quota, and nothing more.
+
+    Two honesty constraints shaped this class:
+
+    1. Groq reports per-minute request/token windows on every response via
+       `x-ratelimit-*` headers, so those are genuinely live.
+    2. The daily ceiling that actually bit us in testing is *not* in those
+       headers on a normal response - it only appears in the text of a 429
+       once the ceiling is hit. So the daily figure shown to an operator is
+       always "as of the last time we found out", explicitly timestamped,
+       never presented as a live number we don't have.
+
+    A locally-summed "tokens used this session" counter fills the gap between
+    daily-limit sightings: not authoritative (it doesn't see usage from other
+    processes sharing the same key, or from before this process started), but
+    directionally useful, and labelled as an estimate rather than a fact.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests: WindowSnapshot | None = None
+        self._tokens: WindowSnapshot | None = None
+        self._daily: DailySnapshot | None = None
+        self._session_tokens_used = 0
+        self._session_started_at = _now_iso()
+
+    def record_headers(self, headers: httpx.Headers) -> None:
+        requests_snap = _parse_window(
+            headers, "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
+            "x-ratelimit-reset-requests",
+        )
+        tokens_snap = _parse_window(
+            headers, "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens",
+            "x-ratelimit-reset-tokens",
+        )
+        with self._lock:
+            if requests_snap is not None:
+                self._requests = requests_snap
+            if tokens_snap is not None:
+                self._tokens = tokens_snap
+
+    def record_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        with self._lock:
+            self._session_tokens_used += max(0, prompt_tokens) + max(0, completion_tokens)
+
+    def record_error_body(self, status: int, body: str) -> None:
+        if status != 429:
+            return
+        match = _DAILY_LIMIT_RE.search(body)
+        if not match:
+            return
+        reset_in = None
+        retry_match = _TRY_AGAIN_RE.search(body)
+        if retry_match:
+            # The capture can trail into a sentence-ending period ("...32.78s.
+            # Need more tokens?"), which _parse_duration's fullmatch then
+            # rejects outright - strip it before parsing.
+            reset_in = _parse_duration(retry_match.group(1).rstrip("."))
+        with self._lock:
+            self._daily = DailySnapshot(
+                limit=int(match.group("limit")),
+                used=int(match.group("used")),
+                reset_in_seconds=reset_in,
+                observed_at=_now_iso(),
+            )
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "per_minute_requests": _window_dict(self._requests),
+                "per_minute_tokens": _window_dict(self._tokens),
+                "daily": _daily_dict(self._daily),
+                "session_tokens_used": self._session_tokens_used,
+                "session_started_at": self._session_started_at,
+            }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_window(
+    headers: httpx.Headers, limit_key: str, remaining_key: str, reset_key: str
+) -> WindowSnapshot | None:
+    limit_raw = headers.get(limit_key)
+    remaining_raw = headers.get(remaining_key)
+    reset_raw = headers.get(reset_key)
+    if limit_raw is None or remaining_raw is None:
+        return None
+    reset_seconds = _parse_duration(reset_raw) if reset_raw else 0.0
+    try:
+        return WindowSnapshot(
+            limit=int(limit_raw), remaining=int(remaining_raw),
+            reset_in_seconds=reset_seconds or 0.0, observed_at=_now_iso(),
+        )
+    except ValueError:
+        return None
+
+
+def _window_dict(snap: WindowSnapshot | None) -> dict[str, Any] | None:
+    if snap is None:
+        return None
+    return {
+        "limit": snap.limit, "remaining": snap.remaining,
+        "reset_in_seconds": round(snap.reset_in_seconds, 1), "observed_at": snap.observed_at,
+    }
+
+
+def _daily_dict(snap: DailySnapshot | None) -> dict[str, Any] | None:
+    if snap is None:
+        return None
+    return {
+        "limit": snap.limit, "used": snap.used,
+        "remaining": max(0, snap.limit - snap.used),
+        "reset_in_seconds": round(snap.reset_in_seconds, 1) if snap.reset_in_seconds is not None else None,
+        "observed_at": snap.observed_at,
+    }
+
+
+#: Process-wide, mirroring the llm_client singleton below.
+quota_tracker = QuotaTracker()
+
+
 class LLMClient:
     """Async client for chat completions and single-shot classification."""
 
@@ -187,9 +345,11 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = LLMError(f"Could not reach the language model: {exc}", retryable=True)
             else:
+                quota_tracker.record_headers(response.headers)
                 if response.status_code == 200:
                     return response.json()
 
+                quota_tracker.record_error_body(response.status_code, response.text)
                 detail = response.text[:300]
                 retryable = response.status_code in RETRYABLE_STATUS
                 last_error = LLMError(
@@ -259,6 +419,7 @@ class LLMClient:
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
+        quota_tracker.record_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
 
         calls: list[ToolCall] = []
         for raw_call in message.get("tool_calls") or []:
@@ -302,6 +463,11 @@ class LLMClient:
         Kept separate from `complete` because classifiers return a bare score,
         take no tools, and must fail fast: a guardrail that hangs for 60 seconds
         is worse than a guardrail that is briefly unavailable.
+
+        Deliberately not fed into `quota_tracker`: Groq rate-limits per model,
+        and the guard model is a separate, much smaller quota from the main
+        chat model. Mixing the two would corrupt the "requests remaining"
+        figure the operator actually cares about - the one that blocks replies.
         """
         if not settings.llm_configured:
             raise LLMError("No LLM API key is configured.", retryable=False)

@@ -233,7 +233,28 @@
           <span class="pill__dot" aria-hidden="true"></span>
           AI Assistant
         </span>
-        <span class="chat__model" id="model-name" title="Language model in use">-</span>
+
+        <div class="quota" id="quota">
+          <button type="button" class="quota__chip" id="quota-chip"
+                  aria-expanded="false" aria-controls="quota-panel" title="LLM quota">
+            <span class="quota__dot" id="quota-dot" aria-hidden="true"></span>
+            <span id="quota-chip-label" class="chat__model">-</span>
+          </button>
+          <div class="quota__panel" id="quota-panel" role="dialog" aria-label="LLM quota detail" hidden>
+            <div class="quota__panel-head">
+              <span>LLM quota</span>
+              <span class="quota__panel-mode" id="quota-effective-mode">-</span>
+            </div>
+            <div id="quota-panel-body"></div>
+          </div>
+        </div>
+
+        <label class="mode-switch" id="mode-switch" title="Force offline mode, bypassing the language model">
+          <input type="checkbox" id="mode-switch-input" class="visually-hidden">
+          <span class="mode-switch__track" aria-hidden="true"><span class="mode-switch__thumb"></span></span>
+          <span class="mode-switch__label" id="mode-switch-label">Live</span>
+        </label>
+
         <button type="button" class="chat__reset" id="reset-chat" aria-label="Start a new conversation" title="New conversation">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-1.6 4.8"/><path d="M20.6 5.5V10H16"/></svg>
         </button>

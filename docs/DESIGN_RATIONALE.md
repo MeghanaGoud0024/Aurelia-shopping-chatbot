@@ -92,6 +92,16 @@ A raised exception gives the model nothing to act on. A typed `ToolError` with a
 
 Costs a day. Buys three things: the application is reviewable with no credentials, CI runs with no secrets, and the comparison in [PROMPT_DESIGN.md](PROMPT_DESIGN.md#7-what-the-language-model-is-actually-contributing) is measured rather than asserted.
 
+### An honest quota display, and a runtime toggle for the fallback planner
+
+**Chose:** a small `QuotaTracker` that shows exactly what Groq actually tells us and nothing it doesn't, plus a Live/Offline switch in the interface that forces every turn through the deterministic planner regardless of key validity. **Over:** either not surfacing quota at all, or inferring a "remaining today" number and presenting it as fact.
+
+This came directly out of hitting the provider's *daily* token ceiling repeatedly while building the rest of the app - a different, harsher limit than the per-minute one tool routing was built for, and one Groq does not expose proactively: it appears nowhere in a successful response's headers, only in the text of a 429 once the ceiling is already hit. A dashboard that invented a live "daily remaining" figure from that silence would be exactly the kind of ungrounded claim the rest of this system exists to prevent. So the daily figure shown is real but explicitly stale - timestamped as of the last 429 that revealed it - while the per-minute windows, which genuinely are live, are shown as such. The distinction is not cosmetic: presenting a guess with the same confidence as a fact is a smaller version of the exact failure mode `output_guard.py` blocks everywhere else in the app.
+
+The toggle exists because "wait for the quota to reset" is not always the right answer, and a person watching the app hit a wall should not need to edit an environment variable and restart the process to get an answer *right now*. It reuses the identical tool layer, authorisation and audit trail as the automatic no-key fallback - the only thing that changes is why the deterministic path was taken, which the trace records (`rule-based planner` vs `rule-based planner (manual)`), so an operator reading it later can tell a missing key from a deliberate call.
+
+**The cost:** the daily figure can be wrong in one direction only - understating usage, never overstating it - if another process shares the same API key. Stated in the panel itself ("doesn't see usage from other processes sharing this key") rather than left implicit.
+
 ---
 
 ## 3. Assumptions
@@ -163,4 +173,4 @@ Two things in the brief I would question before building further.
 
 **"Place purchases through a chat interface"** is the right feature and the wrong default. Conversational purchase is excellent for reorders and for a known item, and worse than a normal product page for anything a customer wants to compare visually. I would ship the assistant as an accelerator beside the catalogue rather than as a replacement for it, and measure whether conversational checkout actually converts before investing further in that path.
 
-**Free-tier rate limits shaped the architecture.** Tool routing and prompt trimming are net improvements I would keep regardless, but they exist because of an 8,000 token-per-minute ceiling. On a production tier I would re-measure whether routing still earns its complexity, and would set `AURELIA_TOOL_ROUTING_ENABLED=false` if it did not. Optimisations that outlive their constraint are a common source of unexplained complexity, so the switch and this note exist together deliberately.
+**Free-tier rate limits shaped the architecture, twice over.** Tool routing and prompt trimming are net improvements I would keep regardless, but they exist because of an 8,000 token-per-minute ceiling. On a production tier I would re-measure whether routing still earns its complexity, and would set `AURELIA_TOOL_ROUTING_ENABLED=false` if it did not. A second, harsher ceiling showed up later - a 200,000 token *daily* cap, which routing does nothing for since it caps total volume, not per-call size. That one produced the quota chip and the Live/Offline toggle described above: an honest live readout instead of a guess, and a way to keep demonstrating the application without waiting out a clock. Optimisations that outlive their constraint are a common source of unexplained complexity, so each one ships with its own off switch (`AURELIA_TOOL_ROUTING_ENABLED`, the mode toggle) rather than being load-bearing by default.

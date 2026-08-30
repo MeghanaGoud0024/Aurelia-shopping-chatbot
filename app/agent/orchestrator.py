@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.fallback import plan_without_llm
 from app.agent.llm import LLMError, LLMResponse, llm_client
+from app.agent.mode import assistant_mode
 from app.agent.prompts import build_system_prompt
 from app.agent.routing import select_tool_schemas
 from app.agent.tools import (
@@ -214,12 +215,22 @@ class Orchestrator:
         artifacts = TurnArtifacts()
         tools_called: set[str] = set()
 
-        if not llm_client.available:
+        # A manually forced fallback (the toggle in the interface) and a
+        # missing API key both land on the same deterministic path, but the
+        # label distinguishes them: one is a capability the deployment lacks,
+        # the other is an operator's live decision, and the trace should say
+        # which.
+        use_fallback = assistant_mode.forced_fallback or not llm_client.available
+        if use_fallback:
             reply, finish_reason = self._run_without_llm(
                 context=context, message=message, artifacts=artifacts,
                 tools_called=tools_called, turn_id=turn_id, add_step=add_step,
             )
-            model_label = "rule-based planner"
+            model_label = (
+                "rule-based planner (manual)"
+                if assistant_mode.forced_fallback and llm_client.available
+                else "rule-based planner"
+            )
         else:
             try:
                 reply, finish_reason = await self._run_with_llm(

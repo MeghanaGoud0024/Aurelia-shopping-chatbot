@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agent.llm import llm_client, quota_tracker
+from app.agent.mode import assistant_mode
 from app.config import settings
 from app.db.models import GuardrailEvent, ToolInvocation
 from app.db.session import get_session
@@ -42,10 +44,50 @@ def health(session: Session = Depends(get_session)) -> dict:
         "environment": settings.environment,
         "llm_configured": settings.llm_configured,
         "model": settings.llm_model if settings.llm_configured else "rule-based planner",
+        "forced_fallback": assistant_mode.forced_fallback,
         "guardrails_enabled": settings.guard_enabled,
         "catalogue_size": product_count,
         "retrieval": retrieval_service.stats(),
     }
+
+
+@router.get("/llm-status")
+def llm_status() -> dict:
+    """Everything actually knowable about provider quota, live.
+
+    This never makes a network call - it reads state accumulated from the
+    headers and error bodies of calls the assistant was already making, so
+    polling it costs nothing and burns no quota of its own. See
+    `app.agent.llm.QuotaTracker` for exactly what is and is not a live figure:
+    the per-minute windows are; the daily ceiling is only as fresh as the last
+    time a 429 stated it, and is timestamped as such rather than implied to be
+    current.
+    """
+    mode = assistant_mode.snapshot()
+    effective_mode = "fallback" if (mode["forced_fallback"] or not llm_client.available) else "live"
+    return {
+        "configured": llm_client.available,
+        "model": settings.llm_model,
+        "forced_fallback": mode["forced_fallback"],
+        "forced_fallback_changed_at": mode["changed_at"],
+        "effective_mode": effective_mode,
+        "quota": quota_tracker.snapshot(),
+    }
+
+
+@router.post("/llm-mode")
+def set_llm_mode(payload: dict) -> dict:
+    """Toggle the manual fallback override.
+
+    Setting forced_fallback=true routes every subsequent turn through the
+    deterministic planner regardless of whether the API key works, until
+    toggled back. Same tools, same authorisation, same audit trail - only the
+    source of the reply's wording changes. See app/agent/fallback.py.
+    """
+    if "forced_fallback" not in payload or not isinstance(payload["forced_fallback"], bool):
+        raise HTTPException(status_code=400, detail="forced_fallback (boolean) is required")
+    assistant_mode.set_forced_fallback(payload["forced_fallback"])
+    return llm_status()
 
 
 @router.get("/metrics")

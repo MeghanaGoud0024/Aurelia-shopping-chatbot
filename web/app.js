@@ -32,6 +32,8 @@
     metrics:   "/api/ops/metrics",
     brands:    "/api/catalog/brands",
     categories: "/api/catalog/categories",
+    llmStatus: "/api/ops/llm-status",
+    llmMode:   "/api/ops/llm-mode",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -43,16 +45,28 @@
     input:      $("composer-input"),
     send:       $("send-button"),
     status:     $("composer-status"),
-    modelName:  $("model-name"),
     avatar:     $("rail-avatar"),
     bagBadge:   $("bag-badge"),
     themeBtn:   $("theme-toggle"),
     resetBtn:   $("reset-chat"),
     main:       $("main"),
     navItems:   Array.from(document.querySelectorAll(".rail__item[data-view]")),
+    quota:          $("quota"),
+    quotaChip:      $("quota-chip"),
+    quotaChipLabel: $("quota-chip-label"),
+    quotaDot:       $("quota-dot"),
+    quotaPanel:     $("quota-panel"),
+    quotaPanelBody: $("quota-panel-body"),
+    quotaEffectiveMode: $("quota-effective-mode"),
+    modeSwitch:      $("mode-switch"),
+    modeSwitchInput: $("mode-switch-input"),
+    modeSwitchLabel: $("mode-switch-label"),
   };
 
-  const state = { busy: false, sessionId: null, dashboard: null, lastTurn: null, spendRange: 6 };
+  const state = {
+    busy: false, sessionId: null, dashboard: null, lastTurn: null, spendRange: 6,
+    modeChanging: false,
+  };
 
   /* ------------------------------------------------------------- helpers */
 
@@ -1097,6 +1111,7 @@
       if (payload.cart) { updateBagBadge(payload.cart.item_count); if (!$("view-bag").hidden) renderBagView(payload.cart); }
       else refreshCart();
       loadDashboard();
+      refreshQuotaStatus();
     } catch (error) {
       removeTyping();
       addAssistant({
@@ -1110,6 +1125,193 @@
       dom.input.focus();
     }
   }
+
+  /* --------------------------------------------------- LLM quota + mode */
+
+  /** Format a countdown for display: "42s", "3m 12s", "1h 08m". Never
+   *  negative - a window that has already reset locally shows "0s" rather
+   *  than counting through zero, since the next poll will correct it. */
+  function formatCountdown(seconds) {
+    const total = Math.max(0, Math.round(seconds));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+    if (m) return `${m}m ${String(s).padStart(2, "0")}s`;
+    return `${s}s`;
+  }
+
+  function formatClock(iso) {
+    if (!iso) return "-";
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime())
+      ? "-" : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  /** A labelled bar for one quota window: "Tokens (per minute)  7,646 / 8,000". */
+  function quotaBarRow(label, used, limit, extra) {
+    const row = el("div", "quota__row");
+    const head = el("div", "quota__row-head");
+    head.appendChild(el("span", null, label));
+    head.appendChild(el("span", "quota__row-value", `${used.toLocaleString()} / ${limit.toLocaleString()}`));
+    row.appendChild(head);
+
+    const track = el("div", "quota__bar-track");
+    const fill = el("div", "quota__bar-fill");
+    const pct = limit > 0 ? Math.max(0, Math.min(100, (used / limit) * 100)) : 0;
+    fill.style.width = `${pct}%`;
+    if (pct >= 90) fill.classList.add("quota__bar-fill--bad");
+    else if (pct >= 65) fill.classList.add("quota__bar-fill--warn");
+    track.appendChild(fill);
+    row.appendChild(track);
+
+    if (extra) row.appendChild(el("div", "quota__row-extra", extra));
+    return row;
+  }
+
+  /** Pick the chip's colour and text from what is actually known.
+   *  Fallback modes are shown as a neutral state, not a failure - forcing
+   *  the offline planner is a legitimate choice, not an error condition. */
+  function quotaChipState(status) {
+    if (status.effective_mode === "fallback") {
+      const reason = status.forced_fallback ? "Offline (manual)" : "Offline (no key)";
+      return { tone: "neutral", label: reason };
+    }
+    const daily = status.quota.daily;
+    const perMinTokens = status.quota.per_minute_tokens;
+
+    if (daily && daily.remaining <= 0) {
+      return { tone: "bad", label: "Daily limit reached" };
+    }
+    if (daily && daily.limit > 0 && daily.remaining / daily.limit < 0.1) {
+      return { tone: "bad", label: `${daily.remaining.toLocaleString()} tokens left today` };
+    }
+    if (perMinTokens && perMinTokens.limit > 0 && perMinTokens.remaining / perMinTokens.limit < 0.15) {
+      return { tone: "warn", label: "Quota tight this minute" };
+    }
+    return { tone: "good", label: status.model };
+  }
+
+  function renderQuotaPanel(status) {
+    clear(dom.quotaPanelBody);
+    const q = status.quota;
+
+    if (q.per_minute_tokens) {
+      dom.quotaPanelBody.appendChild(quotaBarRow(
+        "Tokens, per minute",
+        q.per_minute_tokens.limit - q.per_minute_tokens.remaining, q.per_minute_tokens.limit,
+        `Resets in ${formatCountdown(q.per_minute_tokens.reset_in_seconds)}`,
+      ));
+    }
+    if (q.per_minute_requests) {
+      dom.quotaPanelBody.appendChild(quotaBarRow(
+        "Requests, per minute",
+        q.per_minute_requests.limit - q.per_minute_requests.remaining, q.per_minute_requests.limit,
+        `Resets in ${formatCountdown(q.per_minute_requests.reset_in_seconds)}`,
+      ));
+    }
+    if (q.daily) {
+      dom.quotaPanelBody.appendChild(quotaBarRow(
+        "Tokens, per day", q.daily.used, q.daily.limit,
+        `As of ${formatClock(q.daily.observed_at)}` +
+          (q.daily.reset_in_seconds != null ? ` · resets in ${formatCountdown(q.daily.reset_in_seconds)}` : ""),
+      ));
+    } else {
+      const note = el("div", "quota__note",
+        "Daily total unknown until the provider first reports it - it isn't sent on ordinary replies, only once the ceiling is actually hit.");
+      dom.quotaPanelBody.appendChild(note);
+    }
+
+    const sessionRow = el("div", "quota__row-extra quota__session");
+    sessionRow.textContent =
+      `${q.session_tokens_used.toLocaleString()} tokens used this session (since ${formatClock(q.session_started_at)}). ` +
+      "An estimate: it doesn't see usage from other processes sharing this key.";
+    dom.quotaPanelBody.appendChild(sessionRow);
+
+    dom.quotaEffectiveMode.textContent = status.effective_mode === "live" ? "Live" : "Offline";
+    dom.quotaEffectiveMode.dataset.tone = status.effective_mode === "live" ? "good" : "neutral";
+  }
+
+  async function refreshQuotaStatus() {
+    let status;
+    try {
+      status = await request(API.llmStatus);
+    } catch {
+      dom.quotaChipLabel.textContent = "Quota unavailable";
+      dom.quotaDot.dataset.tone = "neutral";
+      return null;
+    }
+
+    const chip = quotaChipState(status);
+    dom.quotaChipLabel.textContent = chip.label;
+    dom.quotaDot.dataset.tone = chip.tone;
+    dom.quotaChip.title =
+      `${status.model} · ${status.effective_mode === "live" ? "Live" : "Offline"} mode. Click for detail.`;
+
+    if (!dom.quotaPanel.hidden) renderQuotaPanel(status);
+
+    // Keep the toggle in sync with server state without fighting a change
+    // the user is actively making (a poll landing mid-click would otherwise
+    // snap the switch back before the POST it triggered has resolved).
+    if (!state.modeChanging) {
+      dom.modeSwitchInput.checked = status.forced_fallback;
+      dom.modeSwitchLabel.textContent = status.forced_fallback ? "Offline" : "Live";
+    }
+    dom.modeSwitch.title = status.configured
+      ? "Force offline mode, bypassing the language model"
+      : "No API key is configured - already running in offline mode";
+    dom.modeSwitchInput.disabled = !status.configured;
+
+    return status;
+  }
+
+  dom.quotaChip.addEventListener("click", async () => {
+    const open = dom.quotaChip.getAttribute("aria-expanded") === "true";
+    dom.quotaChip.setAttribute("aria-expanded", String(!open));
+    dom.quotaPanel.hidden = open;
+    if (!open) {
+      const status = await refreshQuotaStatus();
+      if (status) renderQuotaPanel(status);
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!dom.quotaPanel.hidden && !dom.quota.contains(event.target)) {
+      dom.quotaPanel.hidden = true;
+      dom.quotaChip.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  dom.modeSwitchInput.addEventListener("change", async () => {
+    const wantsFallback = dom.modeSwitchInput.checked;
+    state.modeChanging = true;
+    dom.modeSwitchInput.disabled = true;
+    dom.modeSwitchLabel.textContent = wantsFallback ? "Offline" : "Live";
+    try {
+      const status = await request(API.llmMode, {
+        method: "POST",
+        body: JSON.stringify({ forced_fallback: wantsFallback }),
+      });
+      announce(
+        wantsFallback
+          ? "Switched to offline mode. Replies now come from the rule-based planner."
+          : "Switched back to the live language model."
+      );
+      const chip = quotaChipState(status);
+      dom.quotaChipLabel.textContent = chip.label;
+      dom.quotaDot.dataset.tone = chip.tone;
+      if (!dom.quotaPanel.hidden) renderQuotaPanel(status);
+    } catch (error) {
+      dom.modeSwitchInput.checked = !wantsFallback;
+      dom.modeSwitchLabel.textContent = !wantsFallback ? "Offline" : "Live";
+      announce(`Could not change mode. ${error.message}`);
+    } finally {
+      state.modeChanging = false;
+      dom.modeSwitchInput.disabled = false;
+    }
+  });
+
+  /* --------------------------------------------------------------- theme */
 
   /* --------------------------------------------------------------- theme */
 
@@ -1154,10 +1356,13 @@
     try {
       const session = await request(API.session);
       state.sessionId = session.session_id;
-      dom.modelName.textContent = session.model;
-    } catch {
-      dom.modelName.textContent = "offline";
-    }
+    } catch { /* the quota chip surfaces connectivity trouble on its own */ }
+
+    refreshQuotaStatus();
+    // Cheap: this reads cached in-process state, no LLM call involved, so
+    // polling it costs nothing. Slow enough that the countdown numbers
+    // being a little stale between polls doesn't matter.
+    window.setInterval(refreshQuotaStatus, 20_000);
 
     await loadDashboard();
     renderBrowseStrip();
