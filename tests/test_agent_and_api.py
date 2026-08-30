@@ -141,9 +141,24 @@ def test_routing_reduces_the_payload():
     ("show me my cart", "view_cart"),
     ("how long do I have to return something", "policy"),
     ("hi", "help"),
+    ('Add "Nike Trail Men\'s T-Shirt" to my bag', "add_to_cart"),
+    ("add the blue hoodie to my cart", "add_to_cart"),
 ])
 def test_fallback_planner_intents(message, intent):
     assert plan_without_llm(message).intent == intent
+
+
+def test_add_to_cart_intent_extracts_the_quoted_name_exactly():
+    """The 'Add to bag' button sends a quoted exact product name; the planner
+    must pass it through unmodified rather than re-tokenising it."""
+    _name, args = plan_without_llm('Add "Nike Core Unisex T-Shirt" to my bag').calls[0]
+    assert args["product_name"] == "Nike Core Unisex T-Shirt"
+
+
+def test_add_to_cart_intent_does_not_fire_on_unrelated_add_mentions():
+    """'add' alone is not enough; it must be paired with 'to ... bag/cart'."""
+    assert plan_without_llm("add more items to my order").intent != "add_to_cart"
+    assert plan_without_llm("What Nike t-shirts are available?").intent != "add_to_cart"
 
 
 def test_fallback_extracts_structured_slots():

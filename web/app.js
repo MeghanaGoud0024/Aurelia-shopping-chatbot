@@ -30,6 +30,8 @@
     confirm:   "/api/checkout/confirm",
     feedback:  "/api/feedback",
     metrics:   "/api/ops/metrics",
+    brands:    "/api/catalog/brands",
+    categories: "/api/catalog/categories",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -394,6 +396,44 @@
     }
   }
 
+  /** "Slide side" brand/category browsing, always visible above the composer.
+   *  Each chip sends a normal chat message rather than calling search
+   *  directly, so it goes through the same guardrails/audit path as typed
+   *  text - consistent with the add-to-bag button on product cards. */
+  async function renderBrowseStrip() {
+    const brandHost = $("browse-brands");
+    const categoryHost = $("browse-categories");
+    try {
+      const [brands, categories] = await Promise.all([
+        request(API.brands),
+        request(API.categories),
+      ]);
+
+      clear(brandHost);
+      for (const { brand } of brands.brands || []) {
+        const chip = el("button", "browse-chip", brand);
+        chip.type = "button";
+        chip.addEventListener("click", () => send(`Show me ${brand} products`));
+        brandHost.appendChild(chip);
+      }
+
+      clear(categoryHost);
+      for (const { category } of categories.categories || []) {
+        const chip = el("button", "browse-chip", category);
+        chip.type = "button";
+        chip.addEventListener("click", () => send(`Show me ${category}`));
+        categoryHost.appendChild(chip);
+      }
+      const deals = el("button", "browse-chip browse-chip--deals", "All deals");
+      deals.type = "button";
+      deals.addEventListener("click", () => send("Show me everything on sale"));
+      categoryHost.appendChild(deals);
+    } catch {
+      // Browsing chips are a convenience, not a requirement - the composer
+      // still works if the catalogue endpoints are briefly unavailable.
+    }
+  }
+
   document.querySelectorAll(".segmented__btn").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelectorAll(".segmented__btn").forEach((b) => b.classList.remove("is-active"));
@@ -736,8 +776,69 @@
 
   /* --------------------------------------------------------- chat cards */
 
+  /* ---- Generated product artwork -------------------------------------
+   * The catalogue is synthetic, so there is no real product photography to
+   * show. Rather than leave cards bare or scrape live retailer sites for
+   * copyrighted images (a real legal and reliability risk, and a direct
+   * contradiction of this app's "runs offline, no external dependencies"
+   * design), each card gets a small generated tile: a brand-toned gradient
+   * plus a category icon. It's deterministic per product (same SKU always
+   * renders the same tile), needs no network call, and never goes stale or
+   * breaks if a remote host changes or blocks scraping. */
+
+  const ART_PALETTE = [
+    ["#f7c9ae", "#ec5b39"], ["#c7e0f4", "#3f6f9e"], ["#f6e2b8", "#c98a1c"],
+    ["#ddd2f0", "#7a55a8"], ["#c9ecd2", "#2f9e6a"], ["#f6d0dd", "#c34f6a"],
+    ["#cfe0ee", "#2c5578"], ["#fbdcbd", "#d97a3f"], ["#e4e6c9", "#7a8a3a"],
+  ];
+
+  const CATEGORY_ICON_PATH = {
+    Topwear: "M8 4 4 6.5 6 10l1.5-1v11.5h9V9L18 10l2-3.5L16 4l-2 2h-4Z",
+    Bottomwear: "M6 3h12l1 4.5-2.2 13.5h-3.6L12 10.5 10.8 21H7.2L5 7.5Z",
+    Footwear: "M4 15.5h13.5a3 3 0 0 0 2.9-3.8L20 10l-5-1.5-2.5-3-4 1.2V13H4Z M4 15.5V18h16.5",
+    Outerwear: "M8 3 4 5l1.5 3.2L8 7v13h8V7l2.5 1.2L20 5l-4-2-2 1.6h-4Z",
+    Accessories: "M6 8h12l1 12H5Z M9 8V6a3 3 0 0 1 6 0v2",
+  };
+
+  const hashString = (value) => {
+    let hash = 0;
+    for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) | 0;
+    return Math.abs(hash);
+  };
+
+  function productArtwork(product) {
+    const seed = product.sku || String(product.product_id);
+    const [colorA, colorB] = ART_PALETTE[hashString(seed) % ART_PALETTE.length];
+    const gradientId = `art-${product.product_id}-${hashString(seed) % 9973}`;
+
+    const wrap = el("div", "mini__art");
+    const svg = svgEl("svg", { viewBox: "0 0 96 72", "aria-hidden": "true" });
+
+    const defs = svgEl("defs", {});
+    const gradient = svgEl("linearGradient", { id: gradientId, x1: "0", y1: "0", x2: "1", y2: "1" });
+    gradient.appendChild(svgEl("stop", { offset: "0%", "stop-color": colorA }));
+    gradient.appendChild(svgEl("stop", { offset: "100%", "stop-color": colorB }));
+    defs.appendChild(gradient);
+    svg.appendChild(defs);
+
+    svg.appendChild(svgEl("rect", { x: 0, y: 0, width: 96, height: 72, fill: `url(#${gradientId})` }));
+
+    const icon = svgEl("g", {
+      transform: "translate(36,18) scale(1)",
+      fill: "none", stroke: "rgba(255,255,255,0.94)",
+      "stroke-width": "1.4", "stroke-linecap": "round", "stroke-linejoin": "round",
+    });
+    icon.appendChild(svgEl("path", { d: CATEGORY_ICON_PATH[product.category] || CATEGORY_ICON_PATH.Topwear }));
+    svg.appendChild(icon);
+
+    wrap.appendChild(svg);
+    return wrap;
+  }
+
   function productMini(product) {
     const card = el("article", "mini");
+    card.appendChild(productArtwork(product));
+
     const top = el("div", "mini__top");
     const head = el("div");
     head.appendChild(el("div", "mini__brand", product.brand));
@@ -758,6 +859,24 @@
       : el("span", "chip chip--good", "In stock")
     );
     card.appendChild(priceRow);
+
+    // Add-to-bag button, right after the price row. It sends a normal chat
+    // message rather than calling a cart endpoint directly, so a click goes
+    // through the exact same tool call, guardrail and audit path as typing
+    // "add it to my bag" - including the assistant asking for a size or
+    // colour when the product has more than one in stock, which a direct API
+    // call would have to reimplement rather than reuse.
+    if (product.in_stock) {
+      const addButton = el("button", "mini__add", "Add to bag");
+      addButton.type = "button";
+      addButton.setAttribute("aria-label", `Add ${product.name} to your bag`);
+      addButton.addEventListener("click", () => {
+        addButton.disabled = true;
+        addButton.textContent = "Adding...";
+        send(`Add "${product.name}" to my bag`);
+      });
+      card.appendChild(addButton);
+    }
 
     const rating = el("div", "mini__meta");
     rating.appendChild(el("span", "stars", stars(product.rating)));
@@ -892,7 +1011,11 @@
     if (payload.blocked) article.classList.add("msg--blocked");
     if (!payload.grounded) article.classList.add("msg--ungrounded");
 
-    payload.products?.forEach((p) => cards.appendChild(productMini(p)));
+    if (payload.products?.length) {
+      const grid = el("div", "mini-grid");
+      payload.products.forEach((p) => grid.appendChild(productMini(p)));
+      cards.appendChild(grid);
+    }
     payload.orders?.forEach((o) => cards.appendChild(orderCard(o)));
     if (payload.checkout_quote) cards.appendChild(quoteCard(payload.checkout_quote));
 
@@ -1037,6 +1160,7 @@
     }
 
     await loadDashboard();
+    renderBrowseStrip();
     renderTraceView(null);
     resizeInput();
     dom.input.focus();

@@ -151,6 +151,30 @@ def test_ambiguous_add_asks_rather_than_guessing(session, catalogue):
     assert "Black" in result.error and "Navy" in result.error
 
 
+def test_add_to_cart_resolves_product_by_exact_name(session, catalogue):
+    """The rule-based planner's add-to-cart intent has no product_id, only the
+    name text it parsed - the tool must resolve that itself."""
+    from app.agent.tools import ToolContext, execute_tool
+
+    ctx = ToolContext(session=session, session_id=SESSION,
+                      customer_id=catalogue["alice"].id, customer_name="Alice Tester")
+    result, status = execute_tool(
+        "add_to_cart", {"product_name": "Nike Core Unisex T-Shirt", "size": "M", "color": "Black"}, ctx
+    )
+    assert status == "ok"
+    assert result["item_count"] == 1
+
+
+def test_add_to_cart_by_name_reports_unknown_product(session, catalogue):
+    from app.agent.tools import ToolContext, execute_tool
+
+    ctx = ToolContext(session=session, session_id=SESSION,
+                      customer_id=catalogue["alice"].id, customer_name="Alice Tester")
+    result, status = execute_tool("add_to_cart", {"product_name": "Nonexistent Product Xyz123"}, ctx)
+    assert status == "error"
+    assert result["code"] == "PRODUCT_NOT_FOUND"
+
+
 def test_free_shipping_threshold(session, catalogue):
     cheap = _add_one(session, catalogue, quantity=1)
     assert cheap.shipping.amount_cents == cart_service.STANDARD_SHIPPING_CENTS

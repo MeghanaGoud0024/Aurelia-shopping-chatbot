@@ -80,7 +80,7 @@ Each of these trades some helpfulness for correctness, on purpose.
 - **Order numbers are allocated with `MAX() + 1`.** Safe because SQLite serialises writers and checkout runs in one transaction. Not safe on a database with concurrent writers, where this becomes a sequence.
 - **Cart is session-scoped, not customer-scoped.** Clearing cookies loses the cart. Real carts persist against the account.
 - **Single language.** English only. No localisation of currency, dates or sizing conventions.
-- **No product images.** Cards are typographic. The dataset is synthetic and stock photography would have been decorative rather than informative.
+- **Product images are generated, not real photography.** Each card carries a deterministic SVG tile - a brand-toned gradient plus a category icon - rather than a photo. The dataset is synthetic, so there is no real product photography to show, and scraping live retailer sites for it would trade this app's offline reproducibility for a legal and reliability risk with no accuracy upside; see [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md) for the reasoning.
 
 ### Retrieval
 

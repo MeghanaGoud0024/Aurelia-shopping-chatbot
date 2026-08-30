@@ -210,14 +210,15 @@ Any question can be deep-linked: `http://127.0.0.1:8000/#ask=What%20Nike%20t-shi
 
 ## What is in the interface
 
-A left-hand rail switches between five sections; the assistant chat is a permanent panel on the right, so a conversation and whatever page you are viewing stay visible together.
+Chat is the wide, primary panel in the middle - this is a conversational assistant first. A left-hand rail switches what shows in a narrower panel on the right: Home, Orders, Bag, Trace, Governance. Both panels are always visible together and both scroll independently.
 
+- **Chat** is where the work happens: product, order and checkout-confirmation cards render from structured tool output beside the reply, never parsed from the model's prose. Product cards carry a small generated tile (brand-toned gradient plus a category icon, drawn client-side, no network call) since the catalogue has no real photography - see [DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md#generated-product-artwork-not-scraped-photography) for why that's a deliberate choice and not a placeholder-for-now. Each in-stock product card has an **Add to bag** button right under the price; clicking it sends the equivalent chat message through the normal pipeline, so it gets the same tool call, guardrail and audit trail a typed request would, including the assistant asking for a size or colour when one isn't already known.
+- A **browse strip** sits above the composer, always available rather than only on first load: horizontally scrollable brand and category chips (pulled live from the catalogue, not hardcoded) plus an **All deals** button, each one sending a canned search.
 - **Home** - a real dashboard, not a static welcome screen: which order is about to arrive (or, with an empty account, an invitation to browse), order-status breakdown as a donut, spend by month, and the five most recent orders. Every figure comes from [`app/services/dashboard.py`](app/services/dashboard.py), scoped to the signed-in customer with the same predicate the order service uses elsewhere - the dashboard is not a privileged view.
 - **Orders** - the full order history as compact rows; each expands in place to the full card with line items and shipment timeline, on demand, so the list stays scannable at any account size.
 - **Bag** - live cart state with a running total and a shortcut into checkout.
 - **Trace** - the backend evidence behind the most recent reply: numbered steps, the exact arguments sent to each tool, a summary of what came back, per-step latency, and whether the answer was grounded. The same trace is also foldable under each message in the chat panel itself.
 - **Governance** - reads `/api/ops/metrics` live: tool call volumes and latencies, guardrail decisions by rule, block rate.
-- Product, order and checkout-confirmation cards render from structured tool output everywhere they appear, never parsed from the model's prose.
 - Feedback thumbs on every reply, recorded against the turn id so a rating joins back to the exact tool calls that produced it.
 - Light and dark themes (screenshots of both are above), full keyboard navigation with a real roving-tabindex rail, ARIA live regions, and `prefers-reduced-motion` honoured.
 

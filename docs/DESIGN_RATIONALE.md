@@ -68,6 +68,14 @@ Float currency is a correctness bug waiting for a rounding boundary. Cheap to do
 
 Writing them on the same session as business data means an audit record and the transaction it describes commit or roll back together. An audit trail that can disagree with the ledger is worse than none.
 
+### Generated product artwork, not scraped photography
+
+**Chose:** a deterministic SVG tile per product - brand-toned gradient, category icon - rendered client-side with no network call. **Over:** scraping product photography from live retailer sites.
+
+The catalogue is synthetic, so there is no real photography to show regardless. Scraping brand sites for it was never seriously on the table: it would mean shipping copyrighted product images inside a submitted assignment, depending at runtime on external hosts this app has no control over (which can rate-limit, block, or restructure without notice), and quietly abandoning the "runs offline, no special infrastructure" property that the rest of this design goes out of its way to hold. None of that buys any accuracy, since the images wouldn't even be *of* the synthetic products being described.
+
+**The cost:** a generated gradient tile is not a product photo, and does not pretend to be one. Accepted, because the alternative traded real risk for an accuracy gain that was never available in the first place.
+
 ### Vanilla frontend, no build step
 
 **Chose:** plain HTML, CSS and JavaScript. **Over:** React with Vite.

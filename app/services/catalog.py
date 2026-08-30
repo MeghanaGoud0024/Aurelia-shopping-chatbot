@@ -324,6 +324,34 @@ def get_product(session: Session, product_id: int) -> ProductDetail | None:
     return _detail(product)
 
 
+def find_product_id_by_name(session: Session, name: str) -> int | None:
+    """Resolve a product by its exact display name.
+
+    Product names are guaranteed unique by the seed generator (see
+    `app/db/seed.py::_unique_name`), so an exact case-insensitive match is
+    unambiguous when it succeeds. Falls back to the top BM25 hit so a close
+    paraphrase still resolves rather than failing outright.
+
+    This exists for callers that only have a name in hand, not an id - the
+    rule-based fallback planner in particular, which parses free text and has
+    no reason to have already looked a product up through search_products.
+    """
+    cleaned = name.strip().strip('"').strip()
+    if not cleaned:
+        return None
+
+    exact = session.scalar(
+        select(Product.id).where(
+            Product.is_active.is_(True), func.lower(Product.name) == cleaned.lower()
+        )
+    )
+    if exact is not None:
+        return exact
+
+    hits = retrieval_service.search_products(cleaned, limit=1)
+    return hits[0].product_id if hits else None
+
+
 def check_availability(
     session: Session, product_id: int, size: str | None = None, color: str | None = None
 ) -> dict[str, Any]:

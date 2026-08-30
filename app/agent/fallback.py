@@ -30,6 +30,15 @@ def _plural(count: int, singular: str, plural_form: str | None = None) -> str:
 
 
 ORDER_NUMBER_RE = re.compile(r"#?\b(\d{3,8})\b")
+# Quoted form matches the "Add to bag" button's exact message
+# (`Add "Product Name" to my bag`); the loose form covers a customer typing
+# the same request without quotes. Requires "to ... bag/cart" so it never
+# fires on an unrelated sentence that merely contains the word "add".
+ADD_TO_CART_RE = re.compile(
+    r'add\s+"(?P<quoted>[^"]+)"\s+to\s+(?:my\s+)?(?:bag|cart|basket)'
+    r'|add\s+(?:the\s+|a\s+|an\s+)?(?P<loose>.+?)\s+to\s+(?:my\s+)?(?:bag|cart|basket)',
+    re.I,
+)
 PRICE_UNDER_RE = re.compile(r"(?:under|below|less than|cheaper than|max(?:imum)?(?:\s+of)?)\s*[$€£]?\s*(\d+(?:\.\d{1,2})?)", re.I)
 PRICE_OVER_RE = re.compile(r"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?)\s*[$€£]?\s*(\d+(?:\.\d{1,2})?)", re.I)
 SIZE_RE = re.compile(r"\b(?:size\s+)?(XS|S|M|L|XL|XXL)\b")
@@ -112,6 +121,8 @@ class Plan:
                 for c in result.get("categories", [])
             ]
             return "Here is what Aurelia carries:\n" + "\n".join(lines)
+        if "lines" in result and "item_count" in result:
+            return self._render_cart(result)
         if "message" in result:
             return str(result["message"])
         return ""
@@ -195,6 +206,20 @@ class Plan:
                 body = body[:480].rsplit(" ", 1)[0] + "..."
             blocks.append(f"From our {passage['document']} policy ({passage['heading']}):\n\n{body}")
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _render_cart(result: dict[str, Any]) -> str:
+        lines = result.get("lines", [])
+        if not lines:
+            return "The bag is empty."
+        last = lines[-1]
+        added = (
+            f"Added {last['product_name']} ({last['size']}/{last['color']}) to your bag."
+        )
+        total = (result.get("total") or {}).get("display", "")
+        summary = f"{result.get('item_count', 0)} item(s) in your bag, total {total}."
+        note = f"\n{result['note']}" if result.get("note") else ""
+        return f"{added}\n{summary}{note}"
 
     @staticmethod
     def _render_availability(result: dict[str, Any]) -> str:
@@ -288,6 +313,15 @@ def plan_without_llm(message: str) -> Plan:
         return Plan("list_orders", [("list_my_orders", {"limit": 5})])
 
     # -- cart intents ------------------------------------------------------
+    add_match = ADD_TO_CART_RE.search(text)
+    if add_match:
+        # A quoted name (what the "Add to bag" button on a product card
+        # sends) is unambiguous; an unquoted phrase falls back to whatever
+        # words follow "add", which add_to_cart resolves the same way
+        # search_products would - close enough for a common phrasing like
+        # "add the nike trail tee to my bag" even without exact quoting.
+        name = add_match.group("quoted") or add_match.group("loose")
+        return Plan("add_to_cart", [("add_to_cart", {"product_name": name.strip()})])
     if any(w in lowered for w in ("my cart", "my basket", "what's in my cart", "view cart", "show cart")):
         return Plan("view_cart", [("view_cart", {})])
     if any(w in lowered for w in ("checkout", "check out", "place my order", "buy it now")):

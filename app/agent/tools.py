@@ -233,9 +233,18 @@ def _request_return(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 
 def _add_to_cart(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    product_id = int(args["product_id"]) if args.get("product_id") is not None else None
+    if product_id is None and args.get("product_name"):
+        product_id = catalog_service.find_product_id_by_name(ctx.session, str(args["product_name"]))
+        if product_id is None:
+            return ToolError(
+                error=f"Nothing matching \"{args['product_name']}\" was found in the catalogue.",
+                code="PRODUCT_NOT_FOUND",
+                recovery_hint="Call search_products to find the product, then use its product_id.",
+            )
     return cart_service.add_to_cart(
         ctx.session, ctx.session_id,
-        product_id=int(args["product_id"]) if args.get("product_id") is not None else None,
+        product_id=product_id,
         variant_id=int(args["variant_id"]) if args.get("variant_id") is not None else None,
         size=args.get("size"), color=args.get("color"),
         quantity=int(args.get("quantity") or 1),
@@ -494,15 +503,18 @@ TOOLS: list[Tool] = [
     Tool(
         name="add_to_cart",
         description=(
-            "Add a product to the shopping cart. Supply either a variant_id, or a product_id "
-            "together with size and colour. If size or colour is ambiguous the tool returns "
-            "NEEDS_SIZE or NEEDS_COLOR listing the real options: ask the customer to choose "
-            "rather than picking for them."
+            "Add a product to the shopping cart. Supply a variant_id, or a product_id, or "
+            "(only if neither is known) a product_name to resolve by exact catalogue name. "
+            "Prefer product_id from a prior search_products call when you have one. Combine "
+            "product_id or product_name with size and colour. If size or colour is ambiguous "
+            "the tool returns NEEDS_SIZE or NEEDS_COLOR listing the real options: ask the "
+            "customer to choose rather than picking for them."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "product_id": {"type": "integer", "description": "Product to add. Combine with size and colour."},
+                "product_name": {"type": "string", "description": "Exact product name, only if product_id is unknown."},
                 "variant_id": {"type": "integer", "description": "Exact variant, from check_availability or get_product_details. Preferred when known."},
                 "size": {"type": "string", "description": "Required when the product has more than one size in stock."},
                 "color": {"type": "string", "description": "Required when the product has more than one colour in stock."},
