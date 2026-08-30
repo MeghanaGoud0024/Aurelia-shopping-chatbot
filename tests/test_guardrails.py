@@ -264,3 +264,139 @@ def test_reply_that_is_entirely_a_tool_name_leak_falls_back_cleanly():
     assert decision.text.strip()
     assert "list_my_orders" not in decision.text
     assert decision.rule == "tool_name_disclosure"
+
+
+# ------------------------------- availability contradiction (span-level)
+
+def test_reply_calling_a_confirmed_available_product_unavailable_is_blocked():
+    """Observed with llama3.2:3b: add_to_cart returned NEEDS_SIZE - the
+    backend confirming the product exists and asking which variant - and the
+    model told the customer it was "no longer available". The tools were
+    correct; the model contradicted them."""
+    decision = screen_output(
+        "It seems that this item is no longer available.",
+        tools_called={"add_to_cart"}, availability_confirmed=True,
+    )
+    assert decision.grounded is False
+    assert decision.rule == "availability_contradiction"
+    assert "no longer available" not in decision.text
+    # The replacement must recover the sale, not just refuse - the product IS
+    # buyable, so the useful next step is asking which variant.
+    assert "in stock" in decision.text.lower()
+
+
+def test_unavailability_claim_is_allowed_when_no_tool_confirmed_availability():
+    """A genuine "that colour is sold out" must still get through - the guard
+    fires on contradiction, not on the words themselves."""
+    decision = screen_output(
+        "That colour is not available.",
+        tools_called={"check_availability"}, availability_confirmed=False,
+    )
+    assert decision.rule == "clean"
+    assert "not available" in decision.text
+
+
+@pytest.mark.parametrize("reply", [
+    "Only 3 left in stock, so I'd order soon.",
+    "Your order is out for delivery today.",
+    "We have it in stock in three colours.",
+])
+def test_availability_guard_does_not_fire_on_ordinary_stock_language(reply):
+    """Narrowly scoped: low-stock warnings and delivery status share
+    vocabulary with unavailability and must not be caught."""
+    decision = screen_output(reply, tools_called={"check_availability"},
+                             availability_confirmed=True)
+    assert decision.rule != "availability_contradiction"
+
+
+def test_artifacts_confirm_availability_from_a_needs_size_question():
+    """add_to_cart asking which size only happens after it finds in-stock
+    variants, so the question itself is proof the product is purchasable."""
+    from app.agent.orchestrator import TurnArtifacts
+
+    artifacts = TurnArtifacts()
+    artifacts.note_availability("add_to_cart", {"code": "NEEDS_SIZE", "options": ["M", "L"]})
+    assert artifacts.availability_confirmed is True
+
+
+def test_artifacts_confirm_availability_from_check_availability():
+    from app.agent.orchestrator import TurnArtifacts
+
+    artifacts = TurnArtifacts()
+    artifacts.note_availability("check_availability", {"found": True, "any_available": True})
+    assert artifacts.availability_confirmed is True
+
+
+def test_artifacts_do_not_confirm_availability_when_out_of_stock():
+    from app.agent.orchestrator import TurnArtifacts
+
+    artifacts = TurnArtifacts()
+    artifacts.note_availability("check_availability", {"found": True, "any_available": False})
+    artifacts.note_availability("add_to_cart", {"code": "OUT_OF_STOCK", "error": "sold out"})
+    assert artifacts.availability_confirmed is False
+
+
+def test_search_results_alone_never_confirm_availability():
+    """A product appearing in search is not the same as a specific variant
+    being in stock - conflating them would make the guard fire on a correct
+    "that colour is sold out"."""
+    from app.agent.orchestrator import TurnArtifacts
+
+    artifacts = TurnArtifacts()
+    artifacts.note_availability("search_products", {"products": [{"product_id": 1, "in_stock": True}]})
+    assert artifacts.availability_confirmed is False
+
+
+# --------------------------------------------- fabricated cart mutations
+
+def test_claiming_an_add_that_never_happened_is_blocked():
+    """Observed with llama3.2:3b: it called only search_products, then told
+    the customer "I've added the ... in size M to your bag. The price is
+    $15.99" - while the cart was empty. A customer believing an item is
+    reserved when nothing happened is among the worst outcomes here."""
+    decision = screen_output(
+        "I've added the Adidas Heritage Men's T-Shirt in size M to your bag. The price is $15.99.",
+        tools_called={"search_products"}, cart_mutated=False,
+    )
+    assert decision.grounded is False
+    assert decision.rule == "unbacked_cart_claim"
+    assert "added" not in decision.text.lower().split("haven't actually")[0]
+
+
+def test_genuine_add_passes():
+    decision = screen_output(
+        "I've added it to your bag.", tools_called={"add_to_cart"}, cart_mutated=True
+    )
+    assert decision.rule == "clean"
+
+
+def test_a_failed_add_does_not_license_the_claim():
+    """add_to_cart appears in tools_called even when it errored, so the check
+    must key off a real success flag rather than tool presence."""
+    decision = screen_output(
+        "I've added it to your bag.", tools_called={"add_to_cart"}, cart_mutated=False
+    )
+    assert decision.rule == "unbacked_cart_claim"
+
+
+@pytest.mark.parametrize("reply", [
+    "Would you like me to add it to your bag?",
+    "Shall I add the medium to your cart?",
+    "I can add that once you pick a colour.",
+])
+def test_offering_to_add_is_not_a_claim(reply):
+    """Offers and questions assert nothing and must not be blocked."""
+    decision = screen_output(reply, tools_called={"search_products"}, cart_mutated=False)
+    assert decision.rule == "clean"
+
+
+def test_artifacts_only_flag_cart_mutation_on_success():
+    from app.agent.orchestrator import TurnArtifacts
+
+    failed = TurnArtifacts()
+    failed.note_availability("add_to_cart", {"code": "NEEDS_SIZE", "options": ["M"]})
+    assert failed.cart_mutated is False
+
+    ok = TurnArtifacts()
+    ok.note_availability("add_to_cart", {"item_count": 1, "lines": []})
+    assert ok.cart_mutated is True

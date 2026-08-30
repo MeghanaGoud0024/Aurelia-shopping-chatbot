@@ -296,11 +296,27 @@ def _get_product_details(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 
 def _check_availability(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    # Accept a name as well as an id, for the same reason add_to_cart does:
+    # in a conversation the model often holds only the product's *name* (the
+    # customer said it, or it came from a prior reply) and has no id to hand.
+    # Demanding one produced a MISSING_ARGUMENT error that a weaker model then
+    # relayed to the customer as "that product is unavailable" - turning a
+    # calling-convention mismatch into a false out-of-stock claim, which is
+    # exactly the wrong-but-confident failure this codebase exists to avoid.
     product_id = _opt_int_or_none(args.get("product_id"))
+    product_name = _opt_str(args.get("product_name"))
+    if product_id is None and product_name:
+        product_id = catalog_service.find_product_id_by_name(ctx.session, product_name)
+        if product_id is None:
+            return ToolError(
+                error=f"Nothing matching \"{product_name}\" was found in the catalogue.",
+                code="PRODUCT_NOT_FOUND",
+                recovery_hint="Call search_products to find the product, then use its product_id.",
+            )
     if product_id is None:
         return ToolError(
-            error="product_id is required.", code="MISSING_ARGUMENT",
-            recovery_hint="Call search_products first.",
+            error="product_id or product_name is required.", code="MISSING_ARGUMENT",
+            recovery_hint="Call search_products first, or pass the exact product_name.",
         )
     result = catalog_service.check_availability(
         ctx.session, product_id,
@@ -524,6 +540,7 @@ TOOLS: list[Tool] = [
             "type": "object",
             "properties": {
                 "product_id": {"type": "integer", "description": "The product_id to check."},
+                "product_name": {"type": "string", "description": "Exact product name, only if product_id is unknown."},
                 "size": {"type": "string", "description": "Size to check, e.g. 'M' or '9'. Omit to see all sizes."},
                 "color": {"type": "string", "description": "Colour to check. Omit to see all colours."},
             },

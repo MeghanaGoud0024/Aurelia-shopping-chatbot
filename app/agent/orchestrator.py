@@ -84,6 +84,45 @@ class TurnArtifacts:
     cart: dict[str, Any] | None = None
     checkout_quote: dict[str, Any] | None = None
     citations: list[str] = field(default_factory=list)
+    #: True once a tool result in this turn positively established that a
+    #: product can be bought. Feeds the output guard's one span-level check -
+    #: see `guardrails.output_guard.contradicts_known_availability`.
+    availability_confirmed: bool = False
+    #: True only once a cart mutation actually *succeeded*. Distinct from
+    #: "add_to_cart appears in tools_called", which is also true when the call
+    #: errored - and a failed add must never support the claim that something
+    #: was added.
+    cart_mutated: bool = False
+
+    def note_availability(self, tool_name: str, result: Any) -> None:
+        """Record whether a tool result proves a product is purchasable.
+
+        Three signals count as proof, and each is a *positive* statement from
+        the backend rather than an absence of bad news:
+
+        * check_availability returning any_available=True.
+        * add_to_cart asking which size or colour - it only reaches that
+          question after finding in-stock variants, so the question itself
+          confirms the product is buyable.
+        * add_to_cart succeeding outright.
+
+        Deliberately never set from search_products: a product appearing in
+        search results is not the same as a specific variant being in stock,
+        and conflating them would make the guard fire on a correct "that
+        colour is sold out".
+        """
+        if not isinstance(result, dict):
+            return
+        if tool_name in {"add_to_cart", "update_cart_quantity", "remove_from_cart"}:
+            if not result.get("code") and result.get("item_count") is not None:
+                self.cart_mutated = True
+        if tool_name == "check_availability" and result.get("any_available") is True:
+            self.availability_confirmed = True
+        elif tool_name == "add_to_cart":
+            if result.get("code") in {"NEEDS_SIZE", "NEEDS_COLOR"}:
+                self.availability_confirmed = True
+            elif not result.get("code") and result.get("item_count") is not None:
+                self.availability_confirmed = True
 
     def absorb(self, tool_name: str, result: Any) -> None:
         """Pull renderable payloads out of a tool result."""
@@ -272,7 +311,11 @@ class Orchestrator:
                 )
 
         # --- 3. Outbound guardrails -------------------------------------
-        output = screen_output(reply, tools_called=tools_called, finish_reason=finish_reason)
+        output = screen_output(
+            reply, tools_called=tools_called, finish_reason=finish_reason,
+            availability_confirmed=artifacts.availability_confirmed,
+            cart_mutated=artifacts.cart_mutated,
+        )
         record_guardrail_event(
             session, session_id=session_id, turn_id=turn_id, stage="output",
             rule=output.rule, action=output.action, detail=output.detail,
@@ -415,6 +458,7 @@ class Orchestrator:
                 )
                 tools_called.add(call.name)
                 artifacts.absorb(call.name, result)
+                artifacts.note_availability(call.name, result)
 
                 add_step(
                     kind="tool_call",
@@ -522,6 +566,7 @@ class Orchestrator:
             )
             tools_called.add(call_name)
             artifacts.absorb(call_name, result)
+            artifacts.note_availability(call_name, result)
             add_step(
                 kind="tool_call", label=call_name, tool_name=call_name,
                 arguments=arguments, result_summary=_summarise(call_name, result),

@@ -112,6 +112,32 @@ UNGROUNDED_REPLACEMENT: dict[str, str] = {
     ),
 }
 
+#: Shown when the reply contradicted a confirmed-available tool result. Written
+#: to recover the conversation rather than merely refuse: the product *is*
+#: buyable, so the useful next step is to ask which variant.
+#: "I've added it to your bag", "it's in your cart now", "I have put it in".
+#: Past/present-tense assertions that a change already happened - deliberately
+#: not matching offers or questions ("shall I add it?", "would you like me to
+#: add"), which claim nothing.
+_CART_MUTATION_CLAIM = re.compile(
+    r"\b(?:I(?:'ve| have)?\s+added"
+    r"|(?:has|have)\s+been\s+added"
+    r"|added\s+(?:it|that|this|the)\b[^.!?]{0,40}\bto\s+your\s+(?:bag|cart|basket)"
+    r"|(?:is|are)\s+now\s+in\s+your\s+(?:bag|cart|basket)"
+    r"|I(?:'ve| have)?\s+removed)\b",
+    re.I,
+)
+
+UNBACKED_CART_CLAIM_REPLACEMENT = (
+    "I haven't actually added anything yet - I don't want to say your bag changed when it "
+    "hasn't. Tell me the size and colour you want and I'll add it properly."
+)
+
+AVAILABILITY_CONTRADICTION_REPLACEMENT = (
+    "That one is in stock - let me get the details right rather than guess. "
+    "Which size and colour would you like?"
+)
+
 UNGROUNDED_FALLBACK = (
     "I don't want to tell you something I haven't verified against our systems. "
     "Could you confirm what you'd like me to look up?"
@@ -166,6 +192,44 @@ def _tool_names() -> frozenset[str]:
     return frozenset(TOOLS_BY_NAME)
 
 
+#: Phrasings that assert a product cannot be bought. Deliberately narrow -
+#: only unambiguous unavailability, so "only 3 left" or "out for delivery"
+#: never trip it.
+_UNAVAILABLE_CLAIM = re.compile(
+    r"\b(?:not\s+(?:currently\s+)?(?:available|in\s+stock)"
+    r"|no\s+longer\s+(?:available|in\s+stock|stocked)"
+    r"|out\s+of\s+stock"
+    r"|sold\s+out"
+    r"|unavailable"
+    r"|we\s+(?:don'?t|do\s+not)\s+(?:have|stock|carry)\s+(?:it|that|this))\b",
+    re.I,
+)
+
+
+def contradicts_known_availability(text: str, availability_confirmed: bool) -> bool:
+    """True when the reply says "unavailable" about something a tool just
+    confirmed is purchasable.
+
+    This is a narrow, deliberately shallow form of span-level grounding. The
+    general check elsewhere in this module verifies only that a *class* of
+    claim had a *class* of supporting call - it cannot tell whether the
+    sentence agrees with what that call returned. That limit is documented in
+    ACCURACY_AND_LIMITATIONS.md, and it is exactly the gap a weaker model
+    falls through: observed with llama3.2:3b telling a customer a shirt was
+    "no longer available" immediately after add_to_cart returned NEEDS_SIZE,
+    which is the backend confirming the product exists and asking which
+    variant to add.
+
+    Only this one contradiction is checked, because it is the one where being
+    wrong is both most likely and most costly: a false "we don't have it"
+    ends the conversation and loses the sale, and unlike a wrong price it
+    gives the customer no reason to question it. Availability is also the one
+    fact the tools return as an unambiguous boolean, so the check is exact
+    rather than heuristic.
+    """
+    return availability_confirmed and bool(_UNAVAILABLE_CLAIM.search(text))
+
+
 def strip_tool_name_sentences(text: str) -> tuple[str, list[str]]:
     """Remove whole sentences that name an internal tool.
 
@@ -206,8 +270,16 @@ def screen_output(
     *,
     tools_called: set[str],
     finish_reason: str = "stop",
+    availability_confirmed: bool = False,
+    cart_mutated: bool = False,
 ) -> OutputDecision:
-    """Screen an assistant reply before it is shown to the customer."""
+    """Screen an assistant reply before it is shown to the customer.
+
+    `availability_confirmed` is set by the orchestrator when a tool result in
+    this turn positively established that a product can be bought. It enables
+    the one span-level contradiction check this guard performs; see
+    `contradicts_known_availability`.
+    """
     reply = normalise_punctuation(reply)
     if not reply.strip():
         return OutputDecision(
@@ -250,6 +322,30 @@ def screen_output(
                 detail=f"stripped internal tool names: {', '.join(leaked_tools)}",
                 findings=leaked_tools,
             )
+
+    # A claimed cart change with no successful mutation behind it is among the
+    # worst things this assistant can say: the customer believes an item is
+    # reserved when nothing happened. Checked against a real success flag
+    # rather than "was add_to_cart called", because a *failed* add also puts
+    # the tool name in tools_called and would otherwise satisfy the check.
+    if _CART_MUTATION_CLAIM.search(text) and not cart_mutated:
+        logger.error("guardrail.unbacked_cart_claim", extra={"tools_called": sorted(tools_called)})
+        return OutputDecision(
+            text=UNBACKED_CART_CLAIM_REPLACEMENT, allowed=True, grounded=False,
+            rule="unbacked_cart_claim", action="block",
+            detail="reply claimed a cart change with no successful cart mutation in this turn",
+        )
+
+    if contradicts_known_availability(text, availability_confirmed):
+        logger.error(
+            "guardrail.availability_contradiction",
+            extra={"tools_called": sorted(tools_called)},
+        )
+        return OutputDecision(
+            text=AVAILABILITY_CONTRADICTION_REPLACEMENT, allowed=True, grounded=False,
+            rule="availability_contradiction", action="block",
+            detail="reply called a product unavailable that a tool confirmed is in stock",
+        )
 
     for rule, pattern, supporting_tools in GROUNDING_RULES:
         if pattern.search(text) and not (tools_called & supporting_tools):
