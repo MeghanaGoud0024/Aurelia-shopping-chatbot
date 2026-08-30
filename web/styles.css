@@ -136,7 +136,12 @@ ul, ol { padding: 0; list-style: none; }
 
 /* ----------------------------------------------------------------- Shell */
 
-.stage { height: 100%; padding: 22px; display: flex; }
+.stage {
+  height: 100vh;
+  height: 100dvh;
+  padding: 22px;
+  display: flex;
+}
 
 .app {
   flex: 1 1 auto;
@@ -890,14 +895,56 @@ ul, ol { padding: 0; list-style: none; }
 }
 
 @media (max-width: 720px) {
-  .stage { padding: 0; }
-  .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) 44vh; border-radius: 0; gap: var(--s3); }
-  .rail { grid-row: auto; grid-column: 1; flex-direction: row; justify-content: space-around; border-radius: var(--r-lg); padding: var(--s2) var(--s3); }
-  .rail__nav { flex-direction: row; }
-  .rail__mark, .rail__foot .rail__avatar { display: none; }
-  .rail__item { width: 56px; }
+  html, body { height: auto; min-height: 100%; }
+  body { overflow-y: auto; }
+
+  /* A phone keyboard changes the visual viewport. Let the document grow and
+     use dynamic viewport units so the transcript cannot collapse between the
+     header, composer and the dashboard panel. The dashboard remains below
+     the primary chat surface and is reachable with normal page scrolling. */
+  .stage {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 0;
+  }
+  .app {
+    flex: 1 0 auto;
+    width: 100%;
+    min-height: 100vh;
+    min-height: 100dvh;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(420px, calc(100vh - 88px)) minmax(320px, 44vh);
+    grid-template-rows: auto minmax(420px, calc(100dvh - 88px)) minmax(320px, 44dvh);
+    border-radius: 0;
+    gap: var(--s2);
+    padding: max(var(--s2), env(safe-area-inset-top)) max(var(--s2), env(safe-area-inset-right)) max(var(--s2), env(safe-area-inset-bottom)) max(var(--s2), env(safe-area-inset-left));
+  }
+  .rail {
+    grid-row: auto;
+    grid-column: 1;
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 0;
+    border-radius: var(--r-lg);
+    padding: var(--s1) 0;
+    overflow-x: auto;
+  }
+  .rail__nav { flex: 1 1 auto; flex-direction: row; justify-content: space-around; gap: 0; }
+  .rail__mark, .rail__foot { display: none; }
+  .rail__item { width: 52px; }
   .chat { grid-column: 1; grid-row: 2; }
-  .main { grid-column: 1; grid-row: 3; }
+  .chat__transcript { min-height: 0; padding: var(--s2) var(--s3) var(--s3); }
+  .chat__foot { padding: 0 var(--s3) max(var(--s3), env(safe-area-inset-bottom)); }
+  .browse { display: none; }
+  .main { grid-column: 1; grid-row: 3; min-height: 320px; }
+}
+
+@media (max-width: 480px) {
+  .chat__head { padding: var(--s3); }
+  .quota__chip { width: 31px; padding: 6px; justify-content: center; }
+  .quota__chip .chat__model, .mode-switch__label { display: none; }
+  .mode-switch { gap: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
