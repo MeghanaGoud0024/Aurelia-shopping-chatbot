@@ -6,6 +6,8 @@ Assignment 2 submission. Runs on standard developer hardware with free, publicly
 
 ![Aurelia home dashboard with a live product search conversation](docs/screenshots/01-dashboard-product-search.png)
 
+![Aurelia home dashboard with a selected product variant](docs/screenshots/01-dashboard-product-search1.png)
+
 *The home dashboard - order status, spend history, and delivery tracking, all read from the same backend the assistant calls - alongside a live conversation. Product cards on the right render from `search_products` output, not from the reply text.*
 
 ---
