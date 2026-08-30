@@ -49,6 +49,7 @@ BRANDS = [
     "Zara", "H&M", "Tommy Hilfiger", "Calvin Klein", "The North Face",
     "Columbia", "Ray-Ban", "Fossil",
 ]
+CATEGORIES = ["Topwear", "Bottomwear", "Footwear", "Outerwear", "Accessories"]
 SUBCATEGORIES = [
     "T-Shirt", "Polo Shirt", "Hoodie", "Sweatshirt", "Casual Shirt", "Tank Top",
     "Jeans", "Chinos", "Joggers", "Shorts", "Track Pants", "Running Shoes",
@@ -285,6 +286,12 @@ def _detect_brand(text: str) -> str | None:
     return None
 
 
+def _detect_category(text: str) -> str | None:
+    """Return a catalogue category selected from the browse-strip controls."""
+    lowered = text.lower()
+    return next((category for category in CATEGORIES if category.lower() in lowered), None)
+
+
 def _detect_policy_topic(text: str) -> str | None:
     """Pick the best-matching policy topic, not merely the first.
 
@@ -428,9 +435,12 @@ def plan_without_llm(message: str) -> Plan:
 
     arguments: dict[str, Any] = {"limit": 6}
     brand = _detect_brand(text)
+    category = _detect_category(text)
     subcategory = _detect_subcategory(text)
     if brand:
         arguments["brand"] = brand
+    if category:
+        arguments["category"] = category
     if subcategory:
         arguments["subcategory"] = subcategory
 

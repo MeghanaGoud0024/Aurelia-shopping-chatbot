@@ -204,6 +204,20 @@ def test_fallback_extracts_structured_slots():
     assert args["sort"] == "price_low_to_high"
 
 
+@pytest.mark.parametrize("message,category", [
+    ("Show me Topwear", "Topwear"),
+    ("Show me Bottomwear", "Bottomwear"),
+    ("Show me Footwear", "Footwear"),
+    ("Show me Outerwear", "Outerwear"),
+    ("Show me Accessories", "Accessories"),
+])
+def test_fallback_routes_browse_categories_to_product_search(message, category):
+    """Browse-strip category chips must work when the LLM is offline."""
+    name, args = plan_without_llm(message).calls[0]
+    assert name == "search_products"
+    assert args["category"] == category
+
+
 def test_womens_query_is_not_misread_as_mens():
     """'women's' contains 'men's'; a naive substring check gets this wrong."""
     _name, args = plan_without_llm("women's hoodies on sale").calls[0]
