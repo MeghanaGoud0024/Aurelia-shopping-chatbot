@@ -204,7 +204,14 @@ async def screen_input(message: str, session_id: str) -> GuardDecision:
             safe_message=safe, redactions=redaction.findings, user_message=REFUSAL_MESSAGE,
         )
 
-    if settings.guard_enabled and llm_client.available:
+    # An empty guard model name disables the classifier layer outright. That is
+    # the correct setting when the configured provider does not host a
+    # purpose-built jailbreak classifier - a local Ollama runtime, say, where
+    # Prompt Guard is not available. Without this, every single turn would fire
+    # a request that is guaranteed to 404, adding latency and log noise to buy
+    # nothing. The deterministic pattern layer above still runs either way, and
+    # authorisation never depended on this layer in the first place.
+    if settings.guard_enabled and llm_client.available and settings.guard_injection_model.strip():
         score = await classify_injection(stripped)
         if score >= settings.guard_injection_threshold:
             logger.warning(

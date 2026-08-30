@@ -157,6 +157,50 @@ class OutputDecision:
     findings: list[str] = field(default_factory=list)
 
 
+#: Internal tool names, discovered from the registry rather than hardcoded so a
+#: new tool cannot quietly become un-guarded. Imported lazily inside the
+#: function to avoid a circular import (tools -> services -> ... -> guardrails).
+def _tool_names() -> frozenset[str]:
+    from app.agent.tools import TOOLS_BY_NAME
+
+    return frozenset(TOOLS_BY_NAME)
+
+
+def strip_tool_name_sentences(text: str) -> tuple[str, list[str]]:
+    """Remove whole sentences that name an internal tool.
+
+    `recovery_hint` on a ToolError is written for the model - "Call
+    list_my_orders to show the orders that do exist" - and a capable model
+    paraphrases it into something customer-facing. A smaller one repeats it
+    verbatim, tool name and all, which leaks internals and reads as an
+    instruction aimed at somebody else.
+
+    Dropping the offending *sentence* rather than blocking the whole reply is
+    deliberate: the leak is almost always one trailing suggestion appended to
+    an otherwise correct and useful answer, so blocking would throw away good
+    information to remove a bad clause. If stripping empties the reply, the
+    caller falls back to the generic disclosure message.
+    """
+    names = _tool_names()
+    if not names:
+        return text, []
+
+    # Split on sentence boundaries while keeping the delimiter, so rejoining
+    # does not mangle spacing or punctuation.
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    kept: list[str] = []
+    found: set[str] = set()
+    for part in parts:
+        hits = {name for name in names if re.search(rf"\b{re.escape(name)}\b", part)}
+        if hits:
+            found |= hits
+            continue
+        kept.append(part)
+    if not found:
+        return text, []
+    return " ".join(kept).strip(), sorted(found)
+
+
 def screen_output(
     reply: str,
     *,
@@ -195,6 +239,17 @@ def screen_output(
     text = normalise_punctuation(redaction.text)
     if redaction.redacted:
         logger.warning("guardrail.output_redacted", extra={"findings": redaction.findings})
+
+    text, leaked_tools = strip_tool_name_sentences(text)
+    if leaked_tools:
+        logger.warning("guardrail.tool_name_leak_stripped", extra={"tools": leaked_tools})
+        if not text.strip():
+            return OutputDecision(
+                text=DISCLOSURE_REPLACEMENT, allowed=True, grounded=True,
+                rule="tool_name_disclosure", action="redact",
+                detail=f"stripped internal tool names: {', '.join(leaked_tools)}",
+                findings=leaked_tools,
+            )
 
     for rule, pattern, supporting_tools in GROUNDING_RULES:
         if pattern.search(text) and not (tools_called & supporting_tools):

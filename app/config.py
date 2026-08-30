@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     #: tokens roughly fourfold with no measurable loss on tool selection, which
     #: is the only judgement call this agent asks the model to make. Raise it if
     #: you extend the assistant into genuinely multi-step planning.
+    #:
+    #: MUST be empty for any model that does not implement it - most do not.
+    #: Ollama, for instance, rejects the request outright with
+    #: '"llama3.2:3b" does not support thinking' rather than ignoring the
+    #: unknown parameter, so sending it to a local model fails every call.
     llm_reasoning_effort: str = "low"
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3
@@ -86,14 +91,31 @@ class Settings(BaseSettings):
         return value
 
     @property
+    def llm_is_local(self) -> bool:
+        """True when the configured endpoint is a model running on this machine.
+
+        Matters because a local runtime (Ollama, LM Studio, llama.cpp's server)
+        needs no API key - it has nobody to bill - so requiring one would make
+        the app fall back to the rule-based planner while a perfectly usable
+        model sits idle on localhost.
+        """
+        host = self.llm_base_url.lower()
+        return any(marker in host for marker in ("localhost", "127.0.0.1", "0.0.0.0", "::1"))
+
+    @property
     def llm_configured(self) -> bool:
         """True when a live LLM call is possible.
+
+        A hosted provider needs a key. A local runtime does not, so a local
+        base URL alone is sufficient - conflating "has credentials" with "can
+        reach a model" would otherwise strand the local setup on the fallback
+        planner for want of a key that does not exist.
 
         When False the application still runs: the orchestrator falls back to a
         deterministic rule-based planner so the product surface is demonstrable
         offline. See `app/agent/fallback.py`.
         """
-        return bool(self.llm_api_key.strip())
+        return self.llm_is_local or bool(self.llm_api_key.strip())
 
     @property
     def is_production(self) -> bool:

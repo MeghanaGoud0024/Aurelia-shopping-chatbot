@@ -213,3 +213,54 @@ def test_punctuation_is_normalised_to_ascii():
 def test_schema_leak_detector_catches_sql():
     assert contains_schema_leak("SELECT * FROM order_items")
     assert not contains_schema_leak("Your order has three items.")
+
+
+# ------------------------------------------- internal tool-name leakage
+
+def test_sentence_naming_an_internal_tool_is_stripped():
+    """A smaller model repeats `recovery_hint` verbatim - tool name and all -
+    instead of paraphrasing it. Observed directly from llama3.2:3b."""
+    from app.guardrails.output_guard import strip_tool_name_sentences
+
+    reply = ("I couldn't find an order with the number 2001. "
+             "You can try calling `list_my_orders` to see your existing orders.")
+    text, found = strip_tool_name_sentences(reply)
+    assert found == ["list_my_orders"]
+    assert "list_my_orders" not in text
+    # The useful half of the answer must survive - blocking the whole reply
+    # would discard correct information to remove one bad clause.
+    assert "couldn't find an order with the number 2001" in text
+
+
+def test_ordinary_reply_is_untouched_by_tool_name_stripping():
+    from app.guardrails.output_guard import strip_tool_name_sentences
+
+    reply = "Your order 1234 has shipped and arrives Wednesday."
+    assert strip_tool_name_sentences(reply) == (reply, [])
+
+
+def test_tool_name_stripping_covers_every_registered_tool():
+    """Guards against a newly added tool being un-protected by default."""
+    from app.agent.tools import TOOLS_BY_NAME
+    from app.guardrails.output_guard import strip_tool_name_sentences
+
+    for name in TOOLS_BY_NAME:
+        _text, found = strip_tool_name_sentences(f"Please call {name} to continue.")
+        assert found == [name], f"{name} was not detected as an internal name"
+
+
+def test_tool_name_leak_is_reported_through_screen_output():
+    decision = screen_output(
+        "No order 2001 found. Try calling `list_my_orders` next.",
+        tools_called={"get_order_status"},
+    )
+    assert "list_my_orders" not in decision.text
+    assert "No order 2001 found." in decision.text
+
+
+def test_reply_that_is_entirely_a_tool_name_leak_falls_back_cleanly():
+    """Stripping must not hand the customer an empty string."""
+    decision = screen_output("Call `list_my_orders` to continue.", tools_called={"list_my_orders"})
+    assert decision.text.strip()
+    assert "list_my_orders" not in decision.text
+    assert decision.rule == "tool_name_disclosure"

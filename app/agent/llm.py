@@ -313,13 +313,20 @@ class LLMClient:
         if self._client is None:
             if not settings.llm_configured:
                 raise LLMError("No LLM API key is configured.", retryable=False)
+            # Only send Authorization when there is actually a key. A local
+            # runtime needs none, and an empty key would otherwise produce the
+            # literal header "Bearer " with no credential - which httpx rejects
+            # outright as an illegal header value, failing the request before
+            # it ever leaves the process.
+            headers = {"Content-Type": "application/json"}
+            api_key = settings.llm_api_key.strip()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
             self._client = httpx.AsyncClient(
                 base_url=settings.llm_base_url.rstrip("/"),
                 timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0),
-                headers={
-                    "Authorization": f"Bearer {settings.llm_api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             )
 

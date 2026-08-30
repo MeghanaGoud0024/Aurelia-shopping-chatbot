@@ -81,6 +81,29 @@ Two models are used, both free on Groq:
 
 To use a different provider, point `AURELIA_LLM_BASE_URL` at it and set the model name. Anything speaking the OpenAI chat-completions protocol with tool calling works: OpenAI, Together, Fireworks, or a local Ollama or vLLM server.
 
+### Running fully local, with no API key and no quota
+
+Groq's free tier is capped at **8,000 tokens/minute and 200,000 tokens/day**, and the daily cap is *per organisation, not per key* - issuing a second key does not raise it. That daily ceiling is easy to reach while iterating. A local model removes the limit entirely:
+
+```bash
+ollama pull llama3.2:3b        # ~2 GB, runs comfortably on 16 GB
+```
+
+```ini
+AURELIA_LLM_BASE_URL=http://localhost:11434/v1
+AURELIA_LLM_MODEL=llama3.2:3b
+AURELIA_LLM_API_KEY=            # local needs no key
+AURELIA_GUARD_INJECTION_MODEL=  # Prompt Guard is Groq-hosted; skip it locally
+AURELIA_LLM_REASONING_EFFORT=   # gpt-oss-only parameter; Ollama rejects it
+```
+
+Nothing else changes - same tools, same guardrails, same audit trail. Typical turn: 3 to 7 seconds on an M-series Mac, versus ~1.3s hosted.
+
+Two constraints worth knowing before choosing this:
+
+- **The model must support tool calling.** `llama3.2`, `qwen2.5` and `mistral-nemo` do; plain `llama2` does not, and the assistant cannot function without it.
+- **Small models are sloppier**, in ways the tool and guardrail layers now absorb rather than break on. `llama3.2:3b` fills every optional parameter with placeholder junk (`"max_price": "0"`, `"query": ""`) instead of omitting them, and repeats internal `recovery_hint` text verbatim to the customer. Both are handled - see the argument-coercion block in [`app/agent/tools.py`](app/agent/tools.py) and `strip_tool_name_sentences` in [`app/guardrails/output_guard.py`](app/guardrails/output_guard.py) - but a larger local model (`qwen2.5:7b`) gives noticeably better tool selection if you have the RAM.
+
 ### It runs without an API key
 
 Leave `AURELIA_LLM_API_KEY` empty and the app still works. A deterministic rule-based planner in [`app/agent/fallback.py`](app/agent/fallback.py) routes messages to the same tools, through the same authorisation and the same audit trail. Only the language quality drops.

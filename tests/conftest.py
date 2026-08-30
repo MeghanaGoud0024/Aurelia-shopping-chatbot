@@ -28,7 +28,15 @@ os.environ["AURELIA_DATABASE_URL"] = f"sqlite:///{_TEST_DB}"
 os.environ.setdefault("AURELIA_LOG_LEVEL", "WARNING")
 # No credentials in the suite: turns run the deterministic planner, so CI needs
 # no secrets and tests never depend on a live model's wording.
+#
+# The base URL is pinned to a hosted one as well, not just the key emptied.
+# A local endpoint needs no key (see Settings.llm_is_local), so if a
+# developer's .env points at Ollama, an empty key alone would still count as
+# "configured" and the suite would silently start driving a real local model -
+# slow, and dependent on whichever model happens to be installed. Pinning both
+# makes the unconfigured state unambiguous regardless of local .env.
 os.environ["AURELIA_LLM_API_KEY"] = ""
+os.environ["AURELIA_LLM_BASE_URL"] = "https://api.groq.com/openai/v1"
 
 from sqlalchemy import create_engine                     # noqa: E402
 from sqlalchemy.orm import sessionmaker                  # noqa: E402

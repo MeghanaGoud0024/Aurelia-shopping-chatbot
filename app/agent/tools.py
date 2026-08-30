@@ -163,31 +163,124 @@ def _dump(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Argument coercion
+#
+# Tool arguments arrive as whatever the model chose to emit, and models differ
+# sharply in how disciplined that is. A strong model omits optional parameters
+# it has no value for; a smaller one - llama3.2:3b, observed directly - fills
+# in every declared parameter with placeholder junk instead:
+#
+#   {"brand": "Adidas", "query": "", "category": "", "max_price": "0",
+#    "min_rating": "0", "in_stock_only": "false", "limit": "6"}
+#
+# Three separate hazards in that one payload, each of which broke something:
+#
+#   * `"0"` is a *string*, and the service layer does `min_price * 100` -> a
+#     TypeError that crashed the whole call.
+#   * `max_price = 0` as a number is worse than a crash: it silently returns
+#     nothing, because no product costs zero or less. A wrong-but-quiet answer
+#     is the failure mode this codebase works hardest to avoid.
+#   * `bool("false")` is **True** in Python. Taken literally, "false" would
+#     turn a filter on rather than off.
+#
+# So coercion belongs here, at the boundary where untrusted model output
+# becomes typed arguments, rather than being pushed onto every service
+# function or assumed away. This hardens the tool layer against any weak
+# model, not just the one that exposed it.
+# ---------------------------------------------------------------------------
+
+#: Strings a model might emit meaning "no value". Compared case-insensitively.
+_NULLISH_STRINGS = frozenset({"", "none", "null", "nil", "n/a", "na", "undefined"})
+
+
+def _opt_str(value: Any) -> str | None:
+    """A trimmed string, or None when the model meant "nothing"."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if text.lower() in _NULLISH_STRINGS else text
+
+
+def _opt_number(value: Any, *, zero_means_absent: bool = False) -> float | None:
+    """A float, or None when absent or unparseable.
+
+    `zero_means_absent` is for bounds where zero carries no usable meaning:
+    a minimum price or rating of 0 excludes nothing, and a *maximum* price of
+    0 excludes everything. Neither is ever a real shopper intent, so a zero on
+    those parameters is far more likely a model placeholder than a request -
+    and treating it as absent turns a silently-empty result set into a correct
+    one. Parameters where zero is meaningful (a quantity, say) must not set
+    this.
+    """
+    text = _opt_str(value)
+    if text is None:
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    if zero_means_absent and number == 0:
+        return None
+    return number
+
+
+def _opt_int(value: Any, default: int) -> int:
+    number = _opt_number(value)
+    return default if number is None else int(number)
+
+
+def _opt_int_or_none(value: Any) -> int | None:
+    """An int, or None when absent - for ids, where "missing" is a real state
+    the executors already branch on and must not become a crash instead."""
+    number = _opt_number(value)
+    return None if number is None else int(number)
+
+
+def _opt_bool(value: Any, default: bool) -> bool:
+    """Parse a boolean the way a model might express one.
+
+    Guards specifically against `bool("false") is True`, which would invert
+    the caller's intent rather than merely ignoring it.
+    """
+    if isinstance(value, bool):
+        return value
+    text = _opt_str(value)
+    if text is None:
+        return default
+    lowered = text.lower()
+    if lowered in {"true", "yes", "y", "1"}:
+        return True
+    if lowered in {"false", "no", "n", "0"}:
+        return False
+    return default
+
+
+# ---------------------------------------------------------------------------
 # Executors
 # ---------------------------------------------------------------------------
 
 def _search_products(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return catalog_service.search_products(
         ctx.session,
-        query=str(args.get("query") or "").strip(),
-        brand=args.get("brand"),
-        category=args.get("category"),
-        subcategory=args.get("subcategory"),
-        gender=args.get("gender"),
-        size=args.get("size"),
-        color=args.get("color"),
-        min_price=args.get("min_price"),
-        max_price=args.get("max_price"),
-        min_rating=args.get("min_rating"),
-        in_stock_only=bool(args.get("in_stock_only", True)),
-        on_sale_only=bool(args.get("on_sale_only", False)),
-        sort=str(args.get("sort") or "relevance"),
-        limit=int(args.get("limit") or 6),
+        query=_opt_str(args.get("query")) or "",
+        brand=_opt_str(args.get("brand")),
+        category=_opt_str(args.get("category")),
+        subcategory=_opt_str(args.get("subcategory")),
+        gender=_opt_str(args.get("gender")),
+        size=_opt_str(args.get("size")),
+        color=_opt_str(args.get("color")),
+        min_price=_opt_number(args.get("min_price"), zero_means_absent=True),
+        max_price=_opt_number(args.get("max_price"), zero_means_absent=True),
+        min_rating=_opt_number(args.get("min_rating"), zero_means_absent=True),
+        in_stock_only=_opt_bool(args.get("in_stock_only"), True),
+        on_sale_only=_opt_bool(args.get("on_sale_only"), False),
+        sort=_opt_str(args.get("sort")) or "relevance",
+        limit=_opt_int(args.get("limit"), 6),
     )
 
 
 def _get_product_details(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    product_id = args.get("product_id")
+    product_id = _opt_int_or_none(args.get("product_id"))
     if product_id is None:
         return ToolError(
             error="product_id is required.", code="MISSING_ARGUMENT",
@@ -203,14 +296,15 @@ def _get_product_details(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 
 def _check_availability(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    product_id = args.get("product_id")
+    product_id = _opt_int_or_none(args.get("product_id"))
     if product_id is None:
         return ToolError(
             error="product_id is required.", code="MISSING_ARGUMENT",
             recovery_hint="Call search_products first.",
         )
     result = catalog_service.check_availability(
-        ctx.session, int(product_id), size=args.get("size"), color=args.get("color")
+        ctx.session, product_id,
+        size=_opt_str(args.get("size")), color=_opt_str(args.get("color")),
     )
     if not result.get("found"):
         return ToolError(
@@ -229,7 +323,7 @@ def _list_categories(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 
 def _get_order_status(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    order_number = str(args.get("order_number") or "").strip()
+    order_number = _opt_str(args.get("order_number")) or ""
     if not order_number:
         return ToolError(
             error="order_number is required.", code="MISSING_ARGUMENT",
@@ -239,7 +333,7 @@ def _get_order_status(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 
 def _track_shipment(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    order_number = str(args.get("order_number") or "").strip()
+    order_number = _opt_str(args.get("order_number")) or ""
     if not order_number:
         return ToolError(
             error="order_number is required.", code="MISSING_ARGUMENT",
@@ -251,50 +345,51 @@ def _track_shipment(ctx: ToolContext, args: dict[str, Any]) -> Any:
 def _list_my_orders(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return order_service.list_my_orders(
         ctx.session, ctx.customer_id,
-        limit=int(args.get("limit") or 5), status=args.get("status"),
+        limit=_opt_int(args.get("limit"), 5), status=_opt_str(args.get("status")),
     )
 
 
 def _cancel_order(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    order_number = str(args.get("order_number") or "").strip()
+    order_number = _opt_str(args.get("order_number")) or ""
     if not order_number:
         return ToolError(
             error="order_number is required.", code="MISSING_ARGUMENT",
             recovery_hint="Ask which order to cancel, or call list_my_orders.",
         )
     return order_service.cancel_order(
-        ctx.session, order_number, ctx.customer_id, reason=str(args.get("reason") or "")
+        ctx.session, order_number, ctx.customer_id, reason=_opt_str(args.get("reason")) or ""
     )
 
 
 def _request_return(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    order_number = str(args.get("order_number") or "").strip()
+    order_number = _opt_str(args.get("order_number")) or ""
     if not order_number:
         return ToolError(
             error="order_number is required.", code="MISSING_ARGUMENT",
             recovery_hint="Ask which order to return, or call list_my_orders.",
         )
     return order_service.request_return(
-        ctx.session, order_number, ctx.customer_id, reason=str(args.get("reason") or "")
+        ctx.session, order_number, ctx.customer_id, reason=_opt_str(args.get("reason")) or ""
     )
 
 
 def _add_to_cart(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    product_id = int(args["product_id"]) if args.get("product_id") is not None else None
-    if product_id is None and args.get("product_name"):
-        product_id = catalog_service.find_product_id_by_name(ctx.session, str(args["product_name"]))
+    product_id = _opt_int_or_none(args.get("product_id"))
+    product_name = _opt_str(args.get("product_name"))
+    if product_id is None and product_name:
+        product_id = catalog_service.find_product_id_by_name(ctx.session, product_name)
         if product_id is None:
             return ToolError(
-                error=f"Nothing matching \"{args['product_name']}\" was found in the catalogue.",
+                error=f"Nothing matching \"{product_name}\" was found in the catalogue.",
                 code="PRODUCT_NOT_FOUND",
                 recovery_hint="Call search_products to find the product, then use its product_id.",
             )
     return cart_service.add_to_cart(
         ctx.session, ctx.session_id,
         product_id=product_id,
-        variant_id=int(args["variant_id"]) if args.get("variant_id") is not None else None,
-        size=args.get("size"), color=args.get("color"),
-        quantity=int(args.get("quantity") or 1),
+        variant_id=_opt_int_or_none(args.get("variant_id")),
+        size=_opt_str(args.get("size")), color=_opt_str(args.get("color")),
+        quantity=_opt_int(args.get("quantity"), 1),
     )
 
 
@@ -303,32 +398,34 @@ def _view_cart(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 
 def _update_cart_quantity(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    variant_id = args.get("variant_id")
+    variant_id = _opt_int_or_none(args.get("variant_id"))
     if variant_id is None:
         return ToolError(
             error="variant_id is required.", code="MISSING_ARGUMENT",
             recovery_hint="Call view_cart to get the variant_id of each line.",
         )
+    # quantity 0 is meaningful here - it removes the line - so it must not be
+    # coerced away as an absent value the way a zero price bound is.
     return cart_service.update_cart_quantity(
-        ctx.session, ctx.session_id, int(variant_id), int(args.get("quantity") or 0)
+        ctx.session, ctx.session_id, variant_id, _opt_int(args.get("quantity"), 0)
     )
 
 
 def _remove_from_cart(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    variant_id = args.get("variant_id")
+    variant_id = _opt_int_or_none(args.get("variant_id"))
     if variant_id is None:
         return ToolError(
             error="variant_id is required.", code="MISSING_ARGUMENT",
             recovery_hint="Call view_cart to get the variant_id of each line.",
         )
-    return cart_service.remove_from_cart(ctx.session, ctx.session_id, int(variant_id))
+    return cart_service.remove_from_cart(ctx.session, ctx.session_id, variant_id)
 
 
 def _prepare_checkout(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return cart_service.prepare_checkout(
         ctx.session, ctx.session_id, ctx.customer_id,
-        payment_method=str(args.get("payment_method") or "card"),
-        shipping_address=args.get("shipping_address"),
+        payment_method=_opt_str(args.get("payment_method")) or "card",
+        shipping_address=_opt_str(args.get("shipping_address")),
     )
 
 
@@ -348,9 +445,9 @@ def _place_order(ctx: ToolContext, args: dict[str, Any]) -> Any:
 
 def _lookup_policy(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return catalog_service.lookup_policy(
-        str(args.get("query") or "").strip(),
-        topic=args.get("topic"),
-        limit=int(args.get("limit") or 3),
+        _opt_str(args.get("query")) or "",
+        topic=_opt_str(args.get("topic")),
+        limit=_opt_int(args.get("limit"), 3),
     )
 
 
