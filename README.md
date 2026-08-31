@@ -16,13 +16,57 @@ Assignment 2 submission. Runs on standard developer hardware with free, publicly
 
 | Document | What it covers |
 | --- | --- |
-| This file | Setup, running, configuration, worked examples, project layout |
+| This file | Setup, running, configuration, architecture overview, accuracy note, worked examples, project layout |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagram, request lifecycle, module responsibilities |
 | [docs/PROMPT_DESIGN.md](docs/PROMPT_DESIGN.md) | Prompt design, the tool contract, and the AI-interaction improvements made. **Short note in section 0.** |
 | [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) | Explainability, feedback handling, accuracy governance, human escalation |
-| [docs/ACCURACY_AND_LIMITATIONS.md](docs/ACCURACY_AND_LIMITATIONS.md) | Hallucination risk, what is and is not defended, known limitations. **Short note in section 0.** |
+| [docs/ACCURACY_AND_LIMITATIONS.md](docs/ACCURACY_AND_LIMITATIONS.md) | Detailed hallucination analysis, residual risks, known limitations and next improvements |
 | [docs/DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md) | Key decisions with reasoning, assumptions, what I would improve with more time |
 | [docs/SCALING.md](docs/SCALING.md) | Larger datasets, more users, stricter enterprise governance |
+
+---
+
+## Architecture overview
+
+The language model is a planner and response writer, not the source of truth. The browser sends a message to FastAPI, input guardrails screen it, and the orchestrator chooses either the Live LLM planner or the deterministic Offline planner. Both planners use the same 17 typed tools. Those tools call normal Python services, and the services enforce identity, pricing, stock, order state, cart rules and checkout confirmation against authoritative data. Tool calls and guardrail decisions are audited before output guardrails validate the response.
+
+```mermaid
+flowchart TD
+    A[Browser chat and structured cards] --> B[FastAPI and server-side identity]
+    B --> C[Input guardrails]
+    C --> D{Planner mode}
+    D -->|Live| E[OpenAI-compatible LLM]
+    D -->|Offline| F[Deterministic rules]
+    E --> G[17 typed tools]
+    F --> G
+    G --> H[Deterministic service layer]
+    H --> I[(SQLite commerce data)]
+    H --> J[BM25 and RRF retrieval]
+    G --> K[Audit trail]
+    H --> L[Output guardrails]
+    L --> A
+```
+
+The critical trust boundary is the tool and service layer. The model cannot provide `customer_id`, run SQL, calculate prices, override stock, change order-state rules or complete checkout without a separate browser confirmation token. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full request lifecycle, data model and module responsibilities.
+
+---
+
+## Accuracy and limitations
+
+The system reduces hallucination risk by grounding transactional claims in backend evidence. Product prices and variants come from the catalogue service, order and delivery facts come from customer-scoped SQL queries, and policy answers come from retrieved policy passages. Product, order, cart and checkout cards render from structured tool output rather than model prose. Output guardrails reject important claim classes when no supporting tool ran.
+
+This does not make every generated sentence correct. Remaining risks include:
+
+- The model can copy a number incorrectly or mix attributes from multiple returned products, although structured cards continue to show the original backend values.
+- Policy retrieval can miss vague or semantic questions because the current retriever is lexical BM25 rather than an embedding or hybrid retriever.
+- A model can over-generalise a retrieved policy passage. The visible citations and trace let a reviewer compare the answer with its evidence.
+- The identity layer is a proof-of-concept session cookie mapped to a demo customer, not production authentication.
+- PII detection is regex-based, injection detection is probabilistic, and several quota and confirmation states are process-local.
+- Live mode depends on provider availability and quota. Offline mode remains available, but its language understanding is intentionally narrower.
+
+Over-reliance on AI is limited by keeping authority in deterministic code. Customer ownership is enforced in SQL, money and stock are handled by services, order transitions are validated by state rules, and a purchase requires an explicit browser confirmation that the model never receives. The trace and feedback views expose the evidence behind each answer so the assistant should support, not replace, human review for uncertain or high-impact cases.
+
+See [docs/ACCURACY_AND_LIMITATIONS.md](docs/ACCURACY_AND_LIMITATIONS.md) for the detailed risk analysis, measured retrieval baseline and prioritised improvements.
 
 ---
 
@@ -53,7 +97,7 @@ There is a `Makefile` if you prefer: `make setup`, `make seed`, `make run`, `mak
 ### Verify the install
 
 ```bash
-make test     # 145 unit and integration tests, no API key needed, ~1.3s
+make test     # 248 unit and integration tests, no API key needed, ~2s
 make smoke    # 19 end-to-end checks against a running server
 ```
 
@@ -130,7 +174,7 @@ Every setting is an environment variable prefixed `AURELIA_`, with a working def
 | `AURELIA_DATABASE_URL` | `sqlite:///./data/aurelia.db` | Any SQLAlchemy URL; PostgreSQL works unchanged |
 | `AURELIA_SEED` | `20260830` | RNG seed, so the dataset is reproducible |
 
-> **Note on the committed `.env`.** This repository ships a working `.env` including an API key, at the explicit request of the assignment reviewer so the application runs immediately on clone. This is **not** the right practice for a production repository, where `.env` belongs in `.gitignore` and secrets come from a secret manager. See [docs/SCALING.md](docs/SCALING.md#secrets-and-configuration) for what this looks like done properly.
+> **Secret handling.** `.env` is intentionally not tracked. Copy `.env.example` to `.env`, add the key locally, and configure the same values as secret environment variables when deploying. Never commit a real API key. See [docs/SCALING.md](docs/SCALING.md#secrets-and-configuration) for the production approach.
 
 ---
 
@@ -317,7 +361,7 @@ app/
   api/                 HTTP routes
 web/                   Interface: no build step, no framework
 data/policies/         7 policy documents, the RAG corpus
-tests/                 145 tests
+tests/                 248 tests
 docs/                  Architecture, prompt design, responsible AI, scaling
 scripts/               seed_db.py, smoke_test.py
 ```
